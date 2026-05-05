@@ -1,0 +1,21 @@
+[Unit]
+Description=PropMatch AI — Retention Cron Job (OPS-1)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=propmatch
+EnvironmentFile=/etc/propmatch/secrets.env
+ExecStart=/usr/bin/curl \
+  --silent \
+  --show-error \
+  --fail \
+  --max-time 60 \
+  --request POST \
+  https://app.propmatch.com.br/api/v1/internal/cron/retention \
+  --header "Authorization: Bearer ${CRON_SECRET}" \
+  --header "Content-Type: application/json"
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=propmatch-retention

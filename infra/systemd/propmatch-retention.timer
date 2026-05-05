@@ -1,0 +1,13 @@
+[Unit]
+Description=PropMatch AI — Retention Cron Timer (daily 03:00 UTC)
+Requires=propmatch-retention.service
+
+[Timer]
+# Run daily at 03:00 UTC (00:00 BRT). Persistent=true means it catches up
+# if the machine was off during the scheduled time.
+OnCalendar=*-*-* 03:00:00 UTC
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target
