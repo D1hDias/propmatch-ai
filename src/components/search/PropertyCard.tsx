@@ -1,0 +1,156 @@
+'use client';
+
+import Image from 'next/image';
+
+export interface PropertyCardData {
+  id: string;
+  title: string;
+  url: string;
+  photos: string[];
+  description: string;
+  neighborhood: string;
+  city: string;
+  price: number;
+  priceType: 'sale' | 'rent';
+  bedrooms: number | null;
+  bathrooms: number | null;
+  areaSqm: number | null;
+  parkingSpots: number | null;
+  furnished: boolean | null;
+  amenities: string[];
+  extractedAmenities: Record<string, boolean>;
+  source: string;
+}
+
+interface PropertyCardProps {
+  property: PropertyCardData;
+  selected?: boolean;
+  onToggleSelect?: (id: string) => void;
+}
+
+const AMENITY_LABELS: Record<string, string> = {
+  portaria24h: 'Portaria 24h',
+  petFriendly: 'Pet friendly',
+  academia: 'Academia',
+  piscina: 'Piscina',
+  churrasqueira: 'Churrasqueira',
+  varanda: 'Varanda',
+  varandaGourmet: 'Varanda gourmet',
+  areaServico: 'Área de serviço',
+  elevador: 'Elevador',
+  arCondicionado: 'Ar condicionado',
+  acessibilidade: 'Acessibilidade',
+};
+
+function formatPrice(price: number, type: 'sale' | 'rent'): string {
+  const formatted = new Intl.NumberFormat('pt-BR', {
+    style: 'currency',
+    currency: 'BRL',
+    maximumFractionDigits: 0,
+  }).format(price);
+  return type === 'rent' ? `${formatted}/mês` : formatted;
+}
+
+export function PropertyCard({ property, selected, onToggleSelect }: PropertyCardProps) {
+  const photo = property.photos[0];
+  const highlightedAmenities = Object.entries(property.extractedAmenities)
+    .filter(([k, v]) => v && AMENITY_LABELS[k])
+    .map(([k]) => AMENITY_LABELS[k]!)
+    .slice(0, 4);
+
+  return (
+    <article
+      className={`relative rounded-xl border bg-card transition-all duration-150 overflow-hidden ${
+        selected ? 'border-primary ring-2 ring-primary/20' : 'border-border hover:border-primary/40'
+      }`}
+    >
+      {/* Selection checkbox */}
+      {onToggleSelect && (
+        <button
+          onClick={() => onToggleSelect(property.id)}
+          className="absolute top-3 left-3 z-10 h-6 w-6 rounded-md border-2 border-white bg-white/80 backdrop-blur-sm flex items-center justify-center shadow-sm"
+          aria-label={selected ? 'Desmarcar imóvel' : 'Selecionar imóvel'}
+        >
+          {selected && (
+            <svg className="h-4 w-4 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+            </svg>
+          )}
+        </button>
+      )}
+
+      {/* Photo */}
+      <div className="relative h-44 w-full bg-muted">
+        {photo ? (
+          <Image
+            src={photo}
+            alt={property.title}
+            fill
+            className="object-cover"
+            unoptimized // portal photos are external — no Next.js optimization
+          />
+        ) : (
+          <div className="h-full w-full flex items-center justify-center text-muted-foreground text-sm">
+            Sem foto
+          </div>
+        )}
+        {/* Source badge */}
+        <span className="absolute bottom-2 right-2 rounded-md bg-black/60 px-2 py-0.5 text-[10px] uppercase tracking-wide text-white">
+          {property.source}
+        </span>
+      </div>
+
+      {/* Content */}
+      <div className="p-4 space-y-3">
+        {/* Price */}
+        <p className="text-xl font-bold text-foreground">
+          {formatPrice(property.price, property.priceType)}
+        </p>
+
+        {/* Title / address */}
+        <p className="text-sm text-muted-foreground line-clamp-1">{property.title}</p>
+        <p className="text-xs text-muted-foreground">{property.neighborhood}, {property.city}</p>
+
+        {/* Specs */}
+        <div className="flex gap-3 text-sm text-muted-foreground flex-wrap">
+          {property.bedrooms != null && (
+            <span>{property.bedrooms} {property.bedrooms === 1 ? 'quarto' : 'quartos'}</span>
+          )}
+          {property.bathrooms != null && (
+            <span>{property.bathrooms} {property.bathrooms === 1 ? 'banheiro' : 'banheiros'}</span>
+          )}
+          {property.areaSqm != null && <span>{property.areaSqm} m²</span>}
+          {property.parkingSpots != null && property.parkingSpots > 0 && (
+            <span>{property.parkingSpots} {property.parkingSpots === 1 ? 'vaga' : 'vagas'}</span>
+          )}
+          {property.furnished === true && <span>Mobiliado</span>}
+        </div>
+
+        {/* Extracted amenities badges */}
+        {highlightedAmenities.length > 0 && (
+          <div className="flex flex-wrap gap-1">
+            {highlightedAmenities.map((label) => (
+              <span
+                key={label}
+                className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] text-primary font-medium"
+              >
+                {label}
+              </span>
+            ))}
+          </div>
+        )}
+
+        {/* External link */}
+        <a
+          href={property.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-block text-xs text-primary underline underline-offset-2 hover:no-underline"
+          onClick={(e) => e.stopPropagation()}
+        >
+          Ver no portal →
+        </a>
+      </div>
+    </article>
+  );
+}

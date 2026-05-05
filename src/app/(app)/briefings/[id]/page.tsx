@@ -2,17 +2,15 @@ import { notFound } from 'next/navigation';
 import Link from 'next/link';
 import { ArrowLeft, Plus } from 'lucide-react';
 import { ExtractionResult } from '@/components/briefings/ExtractionResult';
+import { SearchTrigger } from '@/components/search/SearchTrigger';
+import { SearchResults } from '@/components/search/SearchResults';
 import { Button } from '@/components/ui/button';
 
 export const metadata = { title: 'Briefing — PropMatch AI' };
 
-// Fetch server-side — cookies are forwarded automatically in Next.js 15 server components
 async function fetchBriefing(id: string) {
-  // In a real implementation this would use the internal service directly.
-  // For now we call the API route to keep the auth/RLS path consistent.
   const baseUrl = process.env.NEXT_PUBLIC_BASE_URL ?? 'http://localhost:3000';
   const res = await fetch(`${baseUrl}/api/v1/briefings/${id}`, {
-    // Revalidate every 2 seconds while the briefing may be processing
     next: { revalidate: 2 },
   });
   if (res.status === 404) return null;
@@ -30,8 +28,11 @@ export default async function BriefingDetailPage({ params }: Props) {
 
   if (!briefing) notFound();
 
+  const isReady = briefing.status === 'ready';
+  const isSearching = briefing.status === 'searching';
+
   return (
-    <div className="max-w-2xl mx-auto space-y-6">
+    <div className="max-w-5xl mx-auto space-y-8">
       {/* Breadcrumb / nav */}
       <div className="flex items-center justify-between">
         <Link
@@ -49,9 +50,25 @@ export default async function BriefingDetailPage({ params }: Props) {
         </Button>
       </div>
 
+      {/* Extraction result */}
       <div className="bg-card rounded-xl shadow-card p-6 lg:p-8">
         <ExtractionResult briefingId={id} initialData={briefing} />
       </div>
+
+      {/* Search section — shown after extraction is done */}
+      {briefing.extractedCriteria && (
+        <section className="space-y-4">
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-semibold">Imóveis encontrados</h2>
+            {/* Only show Buscar button if not already searching/ready */}
+            {!isSearching && !isReady && (
+              <SearchTrigger briefingId={id} />
+            )}
+          </div>
+
+          {(isSearching || isReady) && <SearchResults briefingId={id} />}
+        </section>
+      )}
     </div>
   );
 }

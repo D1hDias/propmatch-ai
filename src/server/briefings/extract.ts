@@ -122,13 +122,16 @@ export interface ExtractionResult {
 }
 
 export async function extractBriefing(rawText: string): Promise<ExtractionResult> {
-  const { content, durationMs } = await callAnthropic({
+  const response = await callAnthropic({
     system: SYSTEM_PROMPT,
     prompt: rawText,
     maxTokens: 512,
     timeoutMs: 15_000,
     maxAttempts: 3,
   });
+
+  const content = response.content[0]?.text ?? '';
+  const { durationMs } = response;
 
   // Parse JSON — malformed response becomes extraction failure
   let parsed: unknown;

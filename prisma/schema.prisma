@@ -200,6 +200,89 @@ model HitlMetric {
   @@map("hitl_metrics")
 }
 
+// ---------------------------------------------------------------------------
+// Sprint 3 tables — DATA-2
+// ---------------------------------------------------------------------------
+
+// DATA-2: Source identifiers for property adapters.
+enum PropertySource {
+  zap
+  vivareal
+  mock
+}
+
+// DATA-2: Property type classification
+enum PropertyType {
+  apartment
+  house
+  studio
+  penthouse
+  commercial
+  warehouse
+  land
+  other
+}
+
+// DATA-2: Canonical deduplicated property record.
+// One row per real-world property regardless of how many sources list it.
+// Deduplication key: address_normalized + geohash7 + bedrooms.
+model Property {
+  id                 String         @id @default(uuid()) @db.Uuid
+  addressNormalized  String         @map("address_normalized")
+  geohash7           String?        @map("geohash7") @db.VarChar(7)
+  neighborhood       String?
+  city               String
+  state              String         @db.VarChar(2)
+  propertyType       PropertyType   @map("property_type")
+  bedrooms           Int?
+  bathrooms          Int?
+  areaSqm            Decimal?       @map("area_sqm") @db.Decimal(8, 2)
+  parkingSpots       Int?           @map("parking_spots")
+  // Primary price and sale type come from the most recent authoritative source
+  price              Decimal        @db.Decimal(14, 2)
+  priceType          String         @map("price_type") @db.VarChar(4) // 'sale' | 'rent'
+  furnished          Boolean?
+  // Amenities structured from source (union of all sources)
+  amenities          Json?          @db.JsonB
+  // Amenities extracted by LLM from description at ingestion time
+  extractedAmenities Json?          @map("extracted_amenities") @db.JsonB
+  firstSeenAt        DateTime       @default(now()) @map("first_seen_at") @db.Timestamptz
+  lastSeenAt         DateTime       @default(now()) @map("last_seen_at") @db.Timestamptz
+  active             Boolean        @default(true)
+
+  sources            PropertySource_[] @relation("PropertySources")
+
+  @@index([geohash7])
+  @@index([city, neighborhood])
+  @@index([price])
+  @@index([bedrooms])
+  @@index([active, lastSeenAt(sort: Desc)])
+  @@map("properties")
+}
+
+// DATA-2: Raw listing data from each source for a canonical property.
+// Keeps the original URL, photos, and full description per source.
+model PropertySource_ {
+  id                  String         @id @default(uuid()) @db.Uuid
+  propertyId          String         @map("property_id") @db.Uuid
+  source              PropertySource
+  externalId          String?        @map("external_id")
+  url                 String
+  title               String?
+  description         String?
+  photos              Json?          @db.JsonB  // String[] of photo URLs
+  rawPrice            Decimal        @map("raw_price") @db.Decimal(14, 2)
+  rawData             Json?          @map("raw_data") @db.JsonB // full raw payload
+  scrapedAt           DateTime       @default(now()) @map("scraped_at") @db.Timestamptz
+
+  property            Property       @relation("PropertySources", fields: [propertyId], references: [id], onDelete: Cascade)
+
+  @@unique([source, externalId])
+  @@index([propertyId])
+  @@index([source, scrapedAt(sort: Desc)])
+  @@map("property_sources")
+}
+
 // AUTH-1: Compliance and security audit trail (24-month legal retention)
 // actor_user_id is tokenized after 12 months by the OPS-6 cron job.
 model AuditLog {

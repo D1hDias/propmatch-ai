@@ -67,14 +67,19 @@ async function withRetry<T>(
 
 export interface AnthropicRequestOptions {
   system?: string;
-  prompt: string;
+  /** Simple string prompt — convenience wrapper that creates a single user message */
+  prompt?: string;
+  /** Full messages array — use when you need multi-turn or explicit roles */
+  messages?: Array<{ role: 'user' | 'assistant'; content: string }>;
+  model?: string;
   maxTokens?: number;
+  max_tokens?: number;
   timeoutMs?: number;
   maxAttempts?: number;
 }
 
 export interface AnthropicResponse {
-  content: string;
+  content: Array<{ type: 'text'; text: string }>;
   inputTokens: number;
   outputTokens: number;
   durationMs: number;
@@ -95,10 +100,18 @@ export async function callAnthropic(opts: AnthropicRequestOptions): Promise<Anth
   const {
     system,
     prompt,
-    maxTokens = 1024,
+    messages: explicitMessages,
+    model = 'claude-sonnet-4-6',
+    maxTokens,
+    max_tokens,
     timeoutMs = 10_000,
     maxAttempts = 3,
   } = opts;
+
+  const resolvedMaxTokens = maxTokens ?? max_tokens ?? 1024;
+
+  const messages: Array<{ role: 'user' | 'assistant'; content: string }> =
+    explicitMessages ?? [{ role: 'user', content: prompt ?? '' }];
 
   if (isOpen()) {
     throw new Error('Anthropic circuit breaker is open — API temporarily unavailable');
@@ -115,10 +128,10 @@ export async function callAnthropic(opts: AnthropicRequestOptions): Promise<Anth
         try {
           return await getClient().messages.create(
             {
-              model: 'claude-sonnet-4-6',
-              max_tokens: maxTokens,
+              model,
+              max_tokens: resolvedMaxTokens,
               ...(system ? { system } : {}),
-              messages: [{ role: 'user', content: prompt }],
+              messages,
             },
             { signal: controller.signal },
           );
@@ -132,13 +145,10 @@ export async function callAnthropic(opts: AnthropicRequestOptions): Promise<Anth
 
     recordSuccess();
 
-    const content = response.content[0];
-    if (!content || content.type !== 'text') {
-      throw new Error('Unexpected Anthropic response format');
-    }
-
     return {
-      content: content.text,
+      content: response.content
+        .filter((c) => c.type === 'text')
+        .map((c) => ({ type: 'text' as const, text: (c as { type: 'text'; text: string }).text })),
       inputTokens: response.usage.input_tokens,
       outputTokens: response.usage.output_tokens,
       durationMs: Date.now() - start,
