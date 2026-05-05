@@ -2,8 +2,8 @@
 // Tables are added per sprint. See docs/data-model.md for the full spec.
 //
 // Sprint 1 (INFRA-1): empty schema — connection config only
-// Sprint 1 (AUTH-1):  users, agencies, lgpd_jobs, audit_log  ← current
-// Sprint 2 (DATA-1):  briefings, hitl_metrics
+// Sprint 1 (AUTH-1):  users, agencies, lgpd_jobs, audit_log
+// Sprint 2 (DATA-1):  briefings, hitl_metrics  ← current
 // Sprint 3 (DATA-2):  properties, property_sources
 // Sprint 4 (DATA-3):  briefing_results
 // Sprint 5 (DATA-4):  clients + briefings.client_id constraint
@@ -47,6 +47,34 @@ enum LgpdJobStatus {
   failed
 }
 
+// DATA-1 enums
+enum BriefingReviewStatus {
+  not_required
+  pending
+  approved
+  corrected
+  overflow_broker_edit
+}
+
+enum BriefingReviewMode {
+  hitl
+  broker_direct_edit
+  auto_approved
+}
+
+enum BriefingStatus {
+  extracting
+  searching
+  ready
+  failed
+}
+
+enum HitlOutcome {
+  approved
+  corrected
+  overflow_redirect
+}
+
 // ---------------------------------------------------------------------------
 // Sprint 1 tables — AUTH-1
 // ---------------------------------------------------------------------------
@@ -87,6 +115,7 @@ model User {
   lgpdJobs       LgpdJob[]
   auditEvents    AuditLog[]
   refreshTokens  RefreshToken[]
+  briefings      Briefing[]
 
   @@index([agencyId])
   @@map("users")
@@ -122,6 +151,53 @@ model RefreshToken {
   @@index([userId])
   @@index([expiresAt])
   @@map("refresh_tokens")
+}
+
+// ---------------------------------------------------------------------------
+// Sprint 2 tables — DATA-1
+// ---------------------------------------------------------------------------
+
+// DATA-1: Core briefing entity. client_id is nullable until Sprint 5 (DATA-5)
+// enforces NOT NULL after the clients table and backfill migration land.
+model Briefing {
+  id                    String               @id @default(uuid()) @db.Uuid
+  userId                String               @map("user_id") @db.Uuid
+  // client_id added as nullable now; NOT NULL enforced in DATA-5 migration
+  clientId              String?              @map("client_id") @db.Uuid
+  rawText               String               @map("raw_text")
+  rawTextPurgeAt        DateTime             @map("raw_text_purge_at") @db.Timestamptz
+  extractedCriteria     Json?                @map("extracted_criteria") @db.JsonB
+  extractionConfidence  Decimal?             @map("extraction_confidence") @db.Decimal(4, 3)
+  reviewStatus          BriefingReviewStatus @default(pending) @map("review_status")
+  reviewMode            BriefingReviewMode?  @map("review_mode")
+  reviewedBy            String?              @map("reviewed_by") @db.Uuid
+  autoWidenUsed         Boolean              @default(false) @map("auto_widen_used")
+  status                BriefingStatus       @default(extracting)
+  createdAt             DateTime             @default(now()) @map("created_at") @db.Timestamptz
+
+  user                  User                 @relation(fields: [userId], references: [id])
+  hitlMetrics           HitlMetric[]
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([clientId])
+  @@index([rawTextPurgeAt])
+  @@map("briefings")
+}
+
+// DATA-1: HITL review SLA tracking. One row per HITL-routed briefing.
+model HitlMetric {
+  id                 String      @id @default(uuid()) @db.Uuid
+  briefingId         String      @map("briefing_id") @db.Uuid
+  queuedAt           DateTime    @default(now()) @map("queued_at") @db.Timestamptz
+  reviewedAt         DateTime?   @map("reviewed_at") @db.Timestamptz
+  reviewDurationMs   Int?        @map("review_duration_ms")
+  reviewerId         String?     @map("reviewer_id") @db.Uuid
+  outcome            HitlOutcome?
+
+  briefing           Briefing    @relation(fields: [briefingId], references: [id])
+
+  @@index([briefingId])
+  @@map("hitl_metrics")
 }
 
 // AUTH-1: Compliance and security audit trail (24-month legal retention)
