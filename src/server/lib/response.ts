@@ -1,4 +1,5 @@
 import 'server-only';
+import * as Sentry from '@sentry/nextjs';
 import { NextResponse } from 'next/server';
 import { v4 as uuidv4 } from 'uuid';
 import { AppError, toErrorResponse } from './errors';
@@ -20,6 +21,7 @@ export function apiError(error: unknown): NextResponse {
     });
   }
 
+  Sentry.captureException(error);
   console.error('[api] Unhandled error:', error);
   return NextResponse.json(
     {
