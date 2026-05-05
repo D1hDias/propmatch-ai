@@ -12,9 +12,10 @@ if (process.env.NODE_ENV !== 'production') g.prisma = prisma;
 type TransactionClient = Prisma.TransactionClient;
 
 /**
- * RLS-aware transaction wrapper — every route handler must use this.
- * Sets app.current_user_id and app.current_user_role for Postgres RLS policies.
- * RLS policies themselves are wired in AUTH-3.
+ * RLS-aware transaction wrapper — every authenticated route handler must use this.
+ * Sets app.current_user_id (UUID) and app.current_user_role for Postgres RLS policies.
+ * Policies are defined in migration auth3; functions current_app_user() / current_app_role()
+ * read these session variables. See docs/adr/0005-rls-pattern.md.
  */
 export async function withRlsContext<T>(
   userId: string,
@@ -22,8 +23,9 @@ export async function withRlsContext<T>(
   fn: (tx: TransactionClient) => Promise<T>,
 ): Promise<T> {
   return await prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SET LOCAL app.current_user_id = ${userId}`;
-    await tx.$executeRaw`SET LOCAL app.current_user_role = ${userRole}`;
+    // Cast to uuid explicitly so Postgres doesn't reject the text literal.
+    await tx.$executeRaw`SELECT set_config('app.current_user_id', ${userId}, true)`;
+    await tx.$executeRaw`SELECT set_config('app.current_user_role', ${userRole}, true)`;
     return fn(tx);
   });
 }
