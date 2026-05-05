@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { PropertyCard, type PropertyCardData } from './PropertyCard';
 import { WidenProposals, type WidenProposal } from './WidenProposals';
+import { SearchFilters, applyFilters, type FilterState } from './SearchFilters';
 
 interface SearchResultsProps {
   briefingId: string;
@@ -17,6 +18,12 @@ export function SearchResults({ briefingId }: SearchResultsProps) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [total, setTotal] = useState<number | null>(null);
   const [widenProposals, setWidenProposals] = useState<WidenProposal[]>([]);
+  const [filters, setFilters] = useState<FilterState>({
+    sort: 'score',
+    bedroomsMin: null,
+    priceMax: null,
+    neighborhood: null,
+  });
   // Incremented when auto-widen is applied — triggers SSE reconnect via useEffect dependency
   const [searchEpoch, setSearchEpoch] = useState(0);
   const eventSourceRef = useRef<EventSource | null>(null);
@@ -81,6 +88,7 @@ export function SearchResults({ briefingId }: SearchResultsProps) {
     setSelected(new Set());
     setTotal(null);
     setWidenProposals([]);
+    setFilters({ sort: 'score', bedroomsMin: null, priceMax: null, neighborhood: null });
     setState('connecting');
     setSearchEpoch((e) => e + 1); // reconnects EventSource
   }
@@ -129,12 +137,28 @@ export function SearchResults({ briefingId }: SearchResultsProps) {
   }
 
   // done
+  const visible = applyFilters(listings, filters);
+
   return (
     <div className="space-y-4">
+      {/* Auto-widen proposals — shown when < 5 results */}
+      {widenProposals.length > 0 && (
+        <WidenProposals
+          briefingId={briefingId}
+          proposals={widenProposals}
+          onWidenStarted={handleWidenStarted}
+        />
+      )}
+
+      {/* Filters + sort */}
+      {listings.length > 1 && (
+        <SearchFilters listings={listings} filters={filters} onChange={setFilters} />
+      )}
+
       {/* Summary bar */}
       <div className="flex items-center justify-between">
         <p className="text-sm text-muted-foreground">
-          {total ?? listings.length} imóveis encontrados
+          {visible.length} de {total ?? listings.length} imóveis
           {selected.size > 0 && ` · ${selected.size} selecionados`}
         </p>
         {selected.size > 0 && (
@@ -149,27 +173,25 @@ export function SearchResults({ briefingId }: SearchResultsProps) {
         )}
       </div>
 
-      {/* Auto-widen proposals — shown when < 5 results */}
-      {widenProposals.length > 0 && (
-        <WidenProposals
-          briefingId={briefingId}
-          proposals={widenProposals}
-          onWidenStarted={handleWidenStarted}
-        />
-      )}
-
-      {listings.length === 0 ? (
+      {visible.length === 0 ? (
         <div className="rounded-xl border border-border bg-card p-12 text-center">
           <p className="text-muted-foreground">
-            Nenhum imóvel encontrado com esses critérios.
+            {listings.length === 0
+              ? 'Nenhum imóvel encontrado com esses critérios.'
+              : 'Nenhum imóvel corresponde aos filtros selecionados.'}
           </p>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Tente ampliar o preço ou o bairro.
-          </p>
+          {listings.length > 0 && (
+            <button
+              onClick={() => setFilters({ sort: 'score', bedroomsMin: null, priceMax: null, neighborhood: null })}
+              className="mt-3 text-sm text-primary underline"
+            >
+              Limpar filtros
+            </button>
+          )}
         </div>
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {listings.map((p) => (
+          {visible.map((p) => (
             <PropertyCard
               key={p.id}
               property={p}

@@ -71,44 +71,44 @@ export async function GET(
 
           if (!current) break;
 
-          // Check for new property_sources linked via briefing_results (Sprint 4 adds this)
-          // For now we poll the briefing status and return all properties from the last search
-          const properties = await prisma.property.findMany({
-            where: {
-              active: true,
-              city: { contains: extractCity(current.extractedCriteria), mode: 'insensitive' },
+          // Query via briefing_results for accurate rank/fitScore ordering
+          const results = await prisma.briefingResult.findMany({
+            where: { briefingId: id },
+            orderBy: { rank: 'asc' },
+            include: {
+              property: {
+                include: { sources: { orderBy: { scrapedAt: 'desc' }, take: 1 } },
+              },
             },
-            include: { sources: { orderBy: { scrapedAt: 'desc' }, take: 1 } },
-            orderBy: { lastSeenAt: 'desc' },
-            take: 50,
           });
 
-          if (properties.length > lastResultCount) {
-            const newListings = properties.slice(lastResultCount);
+          if (results.length > lastResultCount) {
+            const newResults = results.slice(lastResultCount);
             controller.enqueue(
               event('result_chunk', {
-                listings: newListings.map((p) => ({
-                  id: p.id,
-                  title: p.sources[0]?.title ?? '',
-                  url: p.sources[0]?.url ?? '',
-                  photos: p.sources[0]?.photos ?? [],
-                  description: p.sources[0]?.description ?? '',
-                  neighborhood: p.neighborhood,
-                  city: p.city,
-                  price: Number(p.price),
-                  priceType: p.priceType,
-                  bedrooms: p.bedrooms,
-                  bathrooms: p.bathrooms,
-                  areaSqm: p.areaSqm ? Number(p.areaSqm) : null,
-                  parkingSpots: p.parkingSpots,
-                  furnished: p.furnished,
-                  amenities: (p.amenities as string[]) ?? [],
-                  extractedAmenities: (p.extractedAmenities as Record<string, boolean>) ?? {},
-                  source: p.sources[0]?.source ?? 'zap',
+                listings: newResults.map((r) => ({
+                  id: r.property.id,
+                  title: r.property.sources[0]?.title ?? '',
+                  url: r.property.sources[0]?.url ?? '',
+                  photos: r.property.sources[0]?.photos ?? [],
+                  description: r.property.sources[0]?.description ?? '',
+                  neighborhood: r.property.neighborhood,
+                  city: r.property.city,
+                  price: Number(r.property.price),
+                  priceType: r.property.priceType,
+                  bedrooms: r.property.bedrooms,
+                  bathrooms: r.property.bathrooms,
+                  areaSqm: r.property.areaSqm ? Number(r.property.areaSqm) : null,
+                  parkingSpots: r.property.parkingSpots,
+                  furnished: r.property.furnished,
+                  amenities: (r.property.amenities as string[]) ?? [],
+                  extractedAmenities: (r.property.extractedAmenities as Record<string, boolean>) ?? {},
+                  source: r.property.sources[0]?.source ?? 'zap',
+                  fitScore: r.fitScore,
                 })),
               }),
             );
-            lastResultCount = properties.length;
+            lastResultCount = results.length;
           }
 
           if (current.status === 'ready') {

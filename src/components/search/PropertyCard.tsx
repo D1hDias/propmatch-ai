@@ -20,6 +20,7 @@ export interface PropertyCardData {
   amenities: string[];
   extractedAmenities: Record<string, boolean>;
   source: string;
+  fitScore?: number;
 }
 
 interface PropertyCardProps {
