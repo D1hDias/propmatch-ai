@@ -1,0 +1,19 @@
+// PropMatch AI — Prisma Schema
+// Tables are added per sprint. See docs/data-model.md for the full spec.
+//
+// Sprint 1 (INFRA-1): empty schema — connection config only
+// Sprint 1 (AUTH-1):  users, agencies, lgpd_jobs, audit_log
+// Sprint 2 (AUTH-2+): briefings, hitl_metrics
+// Sprint 3:           properties, property_sources
+// Sprint 4:           briefing_results
+// Sprint 5:           clients + briefings.client_id constraint
+// Sprint 6:           messages
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
