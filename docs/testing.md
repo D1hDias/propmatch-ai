@@ -6,8 +6,8 @@ PropMatch AI's tests exist to make refactoring fearless and to catch regressions
 
 We follow a standard test pyramid:
 
-- **Unit tests** (most numerous) — pure functions, single classes, no I/O.
-- **Integration tests** — service against a real database, real Redis, mocked external APIs.
+- **Unit tests** (most numerous) — pure functions, single modules, no I/O.
+- **Integration tests** — server code against a real database, real Redis, mocked external APIs.
 - **E2E tests** (fewest) — full user flows in a browser against a deployed staging environment.
 
 Coverage thresholds:
@@ -18,31 +18,32 @@ Coverage thresholds:
 
 | Layer | Tool |
 |-------|------|
-| Frontend unit | Vitest + React Testing Library |
-| Frontend E2E | Playwright (Chromium, Firefox, WebKit) |
-| Node services | Vitest |
-| Python services | pytest + pytest-asyncio |
+| Unit + Integration (server and client) | Vitest + React Testing Library |
+| E2E | Playwright (Chromium, Firefox, WebKit) |
+| API integration tests against route handlers | Vitest + `next-test-api-route-handler` (or direct invocation) |
 | Load testing | k6 |
 | Visual regression | Storybook + Chromatic (Phase 2) |
+
+Single language stack (TypeScript) across the entire codebase. No Python testing — there is no Python in the codebase.
 
 ## Conventions
 
 ### File location
 
-- Unit tests live next to the code: `foo.ts` → `foo.test.ts`. Same for Python.
-- Integration tests live in `tests/integration/` per service.
-- E2E tests live in `apps/web/e2e/`.
+- Unit tests live next to the code: `foo.ts` → `foo.test.ts`.
+- Integration tests live in `tests/integration/`.
+- E2E tests live in `tests/e2e/`.
 
 ### Naming
 
-- Test files end in `.test.ts` (TypeScript) or `_test.py` (Python).
+- Test files end in `.test.ts` or `.test.tsx`.
 - Test names describe behavior in the present tense:
   - ✅ `extracts city from briefing with explicit neighborhood`
-  - ❌ `should extract city`, `extract_city_test`
+  - ❌ `should extract city`, `extractCityTest`
 
 ### Structure
 
-Arrange-Act-Assert. No more than one `act()` and one cluster of assertions per test. If a test needs two acts, it is two tests.
+Arrange-Act-Assert. No more than one act and one cluster of assertions per test. If a test needs two acts, it is two tests.
 
 ```typescript
 test('rejects signup without LGPD consent', async () => {
@@ -50,19 +51,25 @@ test('rejects signup without LGPD consent', async () => {
   const payload = { email: 'a@b.com', password: 'secret123', name: 'A', phone: '+5511987654321' };
 
   // Act
-  const res = await client.post('/auth/signup', payload);
+  const res = await POST(new Request('http://localhost/api/v1/auth/signup', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  }));
 
   // Assert
   expect(res.status).toBe(400);
-  expect(res.body.error.code).toBe('VALIDATION_FAILED');
-  expect(res.body.error.details.field_errors).toContainEqual({ field: 'lgpd_consent', message: expect.any(String) });
+  const body = await res.json();
+  expect(body.error.code).toBe('VALIDATION_FAILED');
+  expect(body.error.details.field_errors).toContainEqual(
+    expect.objectContaining({ field: 'lgpd_consent' })
+  );
 });
 ```
 
 ### Test data
 
-- Factories for entities: `userFactory()`, `briefingFactory()`. Defined per service in `tests/factories/`.
-- Faker (`@faker-js/faker` for Node, `Faker` for Python) generates realistic-looking data.
+- Factories for entities: `userFactory()`, `briefingFactory()`. Defined in `tests/factories/`.
+- Faker (`@faker-js/faker`) generates realistic-looking data.
 - Brazilian locale where it matters (names, addresses, phone numbers).
 
 ## Unit tests
@@ -80,30 +87,32 @@ Unit tests cover pure logic. They run in milliseconds. They do not touch the net
 - The fit-score function returns 100 for an exact-match property.
 - The address normalizer collapses "R. Domingos de Morais" and "Rua Domingos de Morais" to the same canonical form.
 - The geohash dedup function flags two listings within the same geohash-7 cell with matching bedrooms as duplicates.
+- The HITL routing logic returns `'pending'` for confidence < 0.80 and `'auto_approved_with_override'` for 0.80–0.85.
 
 ## Integration tests
 
-Integration tests cover service boundaries with real infrastructure but mocked external APIs.
+Integration tests cover server code with real infrastructure but mocked external APIs.
 
 ### Setup
 
 - Each test spins up a fresh Postgres schema (testcontainers) or rolls back a transaction at the end.
-- Redis is real (a separate test instance).
-- External APIs (Claude, partner sources, WhatsApp) are mocked at the HTTP layer using `nock` (Node) or `respx` (Python).
+- Redis is real (a separate test instance via Docker Compose).
+- External APIs (Anthropic, partner sources, Stripe, Resend) are mocked at the HTTP layer using `nock` or `msw`.
 
 ### What integration tests cover
 
-- HTTP handler behavior end-to-end within a service.
+- Route handler behavior end-to-end (request → handler → DB → response).
 - RLS policies — verify a query as broker A cannot see broker B's data.
 - Database constraints — verify NOT NULL, CHECK, UNIQUE behavior on real schema.
 - Migration up/down — every migration runs forward and backward in CI.
 - Idempotency — replaying a request with the same `Idempotency-Key` returns the cached response.
+- Server actions and API route handlers exercise the same business logic; both are covered.
 
 ### What integration tests do not cover
 
 - Timing / latency. Use load tests for that.
-- Cross-service flows. Use E2E for that.
 - UI rendering. Use frontend unit + E2E for that.
+- Network-level behavior of Cloudflare or Caddy. Test in staging.
 
 ## E2E tests
 
@@ -117,10 +126,11 @@ E2E tests cover the workflows brokers actually use, against a deployed staging e
 4. Trigger auto-widen → result count increases.
 5. Hit a 0-result briefing → see the auto-widen offer with broker-facing PT-BR message.
 6. Tier-gated feature attempt as Free user → see upgrade modal.
+7. Solicit LGPD deletion → receive cancellation email → cancel within 7 days.
 
 ### Conventions
 
-- Page Object Model. Selectors live in `e2e/pages/`.
+- Page Object Model. Selectors live in `tests/e2e/pages/`.
 - Selectors use `data-testid`. Don't use CSS classes — they break under refactor.
 - Tests are independent. Each creates its own user via the API, then logs in via the UI.
 - Screenshots and video on failure, retained for 7 days.
@@ -135,8 +145,8 @@ pnpm e2e:debug   # Playwright inspector
 
 ## Test data and fixtures
 
-- Briefing fixtures: 50 hand-curated real-world Portuguese briefings, labeled with expected extracted criteria. Lives in `services/briefing-svc/tests/fixtures/briefings.json`. This is the ground truth for NLP accuracy benchmarks.
-- Property fixtures: 200 property records covering common edge cases (missing fields, unusual prices, ambiguous locations). Lives in `services/search-svc/tests/fixtures/properties.json`.
+- Briefing fixtures: 50 hand-curated real-world Portuguese briefings, labeled with expected extracted criteria. Lives in `tests/fixtures/briefings.json`. Ground truth for NLP accuracy benchmarks.
+- Property fixtures: 200 property records covering common edge cases. Lives in `tests/fixtures/properties.json`.
 - Both fixture sets grow over time. Bug fixes that involve a problematic input add that input to the fixture set.
 
 ## NLP accuracy benchmarks
@@ -145,8 +155,8 @@ Briefing extraction is judged against the labeled fixture set:
 
 - Run nightly in CI.
 - Threshold: 90% accuracy on critical fields (city, bedrooms, price_max).
-- Drop > 2pp triggers a Slack alert.
-- Results visualized in a Datadog dashboard.
+- Drop > 2 percentage points triggers a Slack alert.
+- Results visualized in a BetterStack dashboard.
 
 This is **not** a normal test — it is a metric. It does not block PRs but does block releases if the threshold is breached.
 
@@ -155,14 +165,14 @@ This is **not** a normal test — it is a metric. It does not block PRs but does
 k6 scripts in `tests/load/`. Run before each major release:
 
 - `briefings_peak.js`: simulates 150 briefings/hour with 15% HITL routing. Verifies p95 latency stays under 8s and HITL queue stays healthy.
-- `signup_burst.js`: 100 concurrent signups. Verifies argon2id hashing doesn't choke the auth service.
-- `search_concurrent.js`: 50 brokers running 3 concurrent searches each. Verifies concurrency cap and spike throttling work.
+- `signup_burst.js`: 100 concurrent signups. Verifies argon2id hashing doesn't choke the app.
+- `search_concurrent.js`: 50 brokers running 3 concurrent searches each. Verifies concurrency cap and spike throttling.
 
 Load tests run against a dedicated staging environment, not production.
 
 ## Pre-MVP synthetic load injection
 
-PRD §10.4 mandates a synthetic load injection day during pilot week 3. This is k6 driving real briefing volume against a production-like environment with the real HITL reviewer team. The exit criteria match production SLAs (p95 search < 8s, HITL p95 review < 3 min).
+PRD §10.4 mandates a synthetic load injection day during pilot week 3. This is k6 driving real briefing volume against a production-like environment with the real HITL reviewer team. Exit criteria match production SLAs (p95 search < 8s, HITL p95 review < 3 min).
 
 ## Snapshot tests
 
@@ -176,7 +186,7 @@ Not acceptable for:
 
 ## Mocks and stubs
 
-- Mock at the boundary, not in the middle. Mock the HTTP request to Claude, not the briefing service's internal extraction function.
+- Mock at the boundary, not in the middle. Mock the HTTP request to Anthropic, not the briefing extraction function itself.
 - Use real implementations of internal collaborators when possible. If the test starts feeling like it's testing the mock, refactor the design instead.
 
 ## CI integration
@@ -199,11 +209,12 @@ PR coverage diff posted as a comment. PRs that drop coverage on critical paths r
 - Configuration values. Trust the config schema validation.
 - Trivial getters/setters.
 - Code paths that only exist for testing.
+- Next.js framework internals.
 
 ## Testing checklist for a new ticket
 
 - [ ] Unit tests cover the new logic, including at least one happy path and one failure mode.
-- [ ] If the change touches an HTTP handler, an integration test exists.
+- [ ] If the change touches a route handler, an integration test exists.
 - [ ] If the change touches a user-visible flow, an E2E test exists.
 - [ ] If the change adds a new error code, a test asserts it surfaces correctly.
 - [ ] If the change touches a critical path (auth, briefing extraction, dedup, LGPD), coverage on changed files is ≥ 90%.
