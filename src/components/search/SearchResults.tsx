@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { PropertyCard, type PropertyCardData } from './PropertyCard';
+import { WidenProposals, type WidenProposal } from './WidenProposals';
 
 interface SearchResultsProps {
   briefingId: string;
@@ -15,6 +16,9 @@ export function SearchResults({ briefingId }: SearchResultsProps) {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [total, setTotal] = useState<number | null>(null);
+  const [widenProposals, setWidenProposals] = useState<WidenProposal[]>([]);
+  // Incremented when auto-widen is applied — triggers SSE reconnect via useEffect dependency
+  const [searchEpoch, setSearchEpoch] = useState(0);
   const eventSourceRef = useRef<EventSource | null>(null);
 
   useEffect(() => {
@@ -38,8 +42,9 @@ export function SearchResults({ briefingId }: SearchResultsProps) {
     });
 
     es.addEventListener('search_complete', (e) => {
-      const data = JSON.parse(e.data) as { total: number };
+      const data = JSON.parse(e.data) as { total: number; widenProposals?: WidenProposal[] };
       setTotal(data.total);
+      setWidenProposals(data.widenProposals ?? []);
       setState('done');
       es.close();
     });
@@ -60,7 +65,7 @@ export function SearchResults({ briefingId }: SearchResultsProps) {
     return () => {
       es.close();
     };
-  }, [briefingId]);
+  }, [briefingId, searchEpoch]);
 
   function toggleSelect(id: string) {
     setSelected((prev) => {
@@ -69,6 +74,15 @@ export function SearchResults({ briefingId }: SearchResultsProps) {
       else next.add(id);
       return next;
     });
+  }
+
+  function handleWidenStarted() {
+    setListings([]);
+    setSelected(new Set());
+    setTotal(null);
+    setWidenProposals([]);
+    setState('connecting');
+    setSearchEpoch((e) => e + 1); // reconnects EventSource
   }
 
   if (state === 'connecting' || state === 'searching') {
@@ -134,6 +148,15 @@ export function SearchResults({ briefingId }: SearchResultsProps) {
           </button>
         )}
       </div>
+
+      {/* Auto-widen proposals — shown when < 5 results */}
+      {widenProposals.length > 0 && (
+        <WidenProposals
+          briefingId={briefingId}
+          proposals={widenProposals}
+          onWidenStarted={handleWidenStarted}
+        />
+      )}
 
       {listings.length === 0 ? (
         <div className="rounded-xl border border-border bg-card p-12 text-center">

@@ -9,12 +9,11 @@ import type { NormalizedListing, SearchCriteria } from '@/server/search/types';
 
 function makeListing(overrides: Partial<NormalizedListing>): NormalizedListing {
   return {
-    id: 'test-id',
-    externalId: overrides.externalId ?? 'ext-1',
+    externalId: 'ext-1',
     source: 'mock',
     url: 'http://example.com/1',
     title: 'Apartamento Teste',
-    description: null,
+    description: '',
     address: 'Rua das Flores, 100',
     neighborhood: 'Vila Mariana',
     city: 'São Paulo',
@@ -27,7 +26,7 @@ function makeListing(overrides: Partial<NormalizedListing>): NormalizedListing {
     price: 500000,
     priceType: 'sale',
     furnished: false,
-    amenities: {},
+    amenities: [],
     extractedAmenities: {},
     photos: [],
     lat: -23.5,
@@ -41,9 +40,8 @@ function makeListing(overrides: Partial<NormalizedListing>): NormalizedListing {
 const criteria: SearchCriteria = {
   city: 'São Paulo',
   neighborhood: 'Vila Mariana',
-  bedrooms: 2,
+  bedroomsMin: 2,
   priceMax: 600000,
-  priceType: 'sale',
   purpose: 'buy',
 };
 

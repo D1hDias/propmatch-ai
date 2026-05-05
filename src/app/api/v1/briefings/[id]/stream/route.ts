@@ -112,10 +112,19 @@ export async function GET(
           }
 
           if (current.status === 'ready') {
+            // Include auto-widen proposals if stored in extractedCriteria
+            const widenProposals =
+              current.extractedCriteria &&
+              typeof current.extractedCriteria === 'object' &&
+              '_widenProposals' in current.extractedCriteria
+                ? (current.extractedCriteria as Record<string, unknown>)['_widenProposals']
+                : [];
+
             controller.enqueue(
               event('search_complete', {
                 total: lastResultCount,
                 durationMs: Date.now() - started,
+                widenProposals: widenProposals ?? [],
               }),
             );
             break;
