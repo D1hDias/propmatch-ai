@@ -2,12 +2,12 @@
 // Tables are added per sprint. See docs/data-model.md for the full spec.
 //
 // Sprint 1 (INFRA-1): empty schema — connection config only
-// Sprint 1 (AUTH-1):  users, agencies, lgpd_jobs, audit_log
-// Sprint 2 (AUTH-2+): briefings, hitl_metrics
-// Sprint 3:           properties, property_sources
-// Sprint 4:           briefing_results
-// Sprint 5:           clients + briefings.client_id constraint
-// Sprint 6:           messages
+// Sprint 1 (AUTH-1):  users, agencies, lgpd_jobs, audit_log  ← current
+// Sprint 2 (DATA-1):  briefings, hitl_metrics
+// Sprint 3 (DATA-2):  properties, property_sources
+// Sprint 4 (DATA-3):  briefing_results
+// Sprint 5 (DATA-4):  clients + briefings.client_id constraint
+// Sprint 6 (DATA-6):  messages
 
 generator client {
   provider = "prisma-client-js"
@@ -16,4 +16,111 @@ generator client {
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum UserRole {
+  broker
+  owner
+  admin
+}
+
+enum UserPlan {
+  free
+  starter
+  pro
+}
+
+enum LgpdJobType {
+  export
+  delete
+}
+
+enum LgpdJobStatus {
+  requested
+  cancellable
+  in_progress
+  completed
+  failed
+}
+
+// ---------------------------------------------------------------------------
+// Sprint 1 tables — AUTH-1
+// ---------------------------------------------------------------------------
+
+// AUTH-1: Multi-broker offices (optional grouping)
+model Agency {
+  id          String   @id @default(uuid()) @db.Uuid
+  name        String
+  seatCount   Int      @map("seat_count")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  ownerUser   User     @relation("AgencyOwner", fields: [ownerUserId], references: [id])
+  ownerUserId String   @unique @map("owner_user_id") @db.Uuid
+
+  members     User[]   @relation("AgencyMembers")
+
+  @@map("agencies")
+}
+
+// AUTH-1: Authenticated users (brokers, owners, admins)
+model User {
+  id             String    @id @default(uuid()) @db.Uuid
+  email          String    @unique
+  name           String
+  phone          String?
+  passwordHash   String    @map("password_hash")
+  role           UserRole  @default(broker)
+  plan           UserPlan  @default(free)
+  lgpdConsentAt  DateTime  @map("lgpd_consent_at") @db.Timestamptz
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt      DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  agency         Agency?   @relation("AgencyMembers", fields: [agencyId], references: [id])
+  agencyId       String?   @map("agency_id") @db.Uuid
+
+  ownedAgency    Agency?   @relation("AgencyOwner")
+
+  lgpdJobs       LgpdJob[]
+  auditEvents    AuditLog[]
+
+  @@index([agencyId])
+  @@map("users")
+}
+
+// AUTH-1 + AUTH-4: DSAR audit trail (export and deletion requests)
+model LgpdJob {
+  id                 String        @id @default(uuid()) @db.Uuid
+  jobType            LgpdJobType   @map("job_type")
+  status             LgpdJobStatus @default(requested)
+  requestedAt        DateTime      @default(now()) @map("requested_at") @db.Timestamptz
+  completedAt        DateTime?     @map("completed_at") @db.Timestamptz
+  cancellationToken  String?       @map("cancellation_token") @db.VarChar(64)
+
+  user               User          @relation(fields: [userId], references: [id])
+  userId             String        @map("user_id") @db.Uuid
+
+  @@index([userId, status])
+  @@map("lgpd_jobs")
+}
+
+// AUTH-1: Compliance and security audit trail (24-month legal retention)
+// actor_user_id is tokenized after 12 months by the OPS-6 cron job.
+model AuditLog {
+  id           String    @id @default(uuid()) @db.Uuid
+  action       String
+  targetType   String?   @map("target_type")
+  targetId     String?   @map("target_id") @db.Uuid
+  details      Json?     @db.JsonB
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  actorUser    User?     @relation(fields: [actorUserId], references: [id])
+  actorUserId  String?   @map("actor_user_id") @db.Uuid
+
+  @@index([actorUserId, createdAt(sort: Desc)])
+  @@index([action, createdAt(sort: Desc)])
+  @@map("audit_log")
 }
