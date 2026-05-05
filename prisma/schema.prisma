@@ -177,6 +177,7 @@ model Briefing {
 
   user                  User                 @relation(fields: [userId], references: [id])
   hitlMetrics           HitlMetric[]
+  results               BriefingResult[]
 
   @@index([userId, createdAt(sort: Desc)])
   @@index([clientId])
@@ -250,7 +251,8 @@ model Property {
   lastSeenAt         DateTime       @default(now()) @map("last_seen_at") @db.Timestamptz
   active             Boolean        @default(true)
 
-  sources            PropertySource_[] @relation("PropertySources")
+  sources            PropertySource_[]  @relation("PropertySources")
+  briefingResults    BriefingResult[]
 
   @@index([geohash7])
   @@index([city, neighborhood])
@@ -281,6 +283,31 @@ model PropertySource_ {
   @@index([propertyId])
   @@index([source, scrapedAt(sort: Desc)])
   @@map("property_sources")
+}
+
+// ---------------------------------------------------------------------------
+// Sprint 4 tables — DATA-3
+// ---------------------------------------------------------------------------
+
+// DATA-3: Links a briefing to its ranked, deduplicated property results.
+// One row per (briefing, property) pair. Supports WhatsApp selection (Sprint 6).
+model BriefingResult {
+  briefingId      String   @map("briefing_id") @db.Uuid
+  propertyId      String   @map("property_id") @db.Uuid
+  fitScore        Int      @map("fit_score")
+  scoreBreakdown  Json?    @map("score_breakdown") @db.JsonB
+  rank            Int
+  selected        Boolean  @default(false)
+  personalNote    String?  @map("personal_note")
+  autoWidenUsed   Boolean  @default(false) @map("auto_widen_used")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  briefing        Briefing @relation(fields: [briefingId], references: [id], onDelete: Cascade)
+  property        Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  @@id([briefingId, propertyId])
+  @@index([briefingId, rank])
+  @@map("briefing_results")
 }
 
 // AUTH-1: Compliance and security audit trail (24-month legal retention)
