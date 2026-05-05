@@ -1,0 +1,67 @@
+name: NLP Accuracy Benchmark (QA-3)
+
+on:
+  schedule:
+    # 04:30 UTC daily — after retention cron (03:00) and before business hours
+    - cron: '30 4 * * *'
+  workflow_dispatch:
+    inputs:
+      ci_mode:
+        description: 'Fail if thresholds not met'
+        required: false
+        default: 'true'
+        type: boolean
+
+jobs:
+  benchmark:
+    name: NLP extraction accuracy
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      JWT_SECRET: ${{ secrets.JWT_SECRET }}
+      ARGON2_PEPPER: ${{ secrets.ARGON2_PEPPER }}
+      NODE_ENV: test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma client
+        run: pnpm exec prisma generate
+
+      - name: Run NLP benchmark
+        run: pnpm exec ts-node --project tsconfig.json tests/benchmarks/nlp-accuracy.ts --ci
+
+      - name: Upload benchmark report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nlp-benchmark-report-${{ github.run_id }}
+          path: .benchmark-report.json
+          retention-days: 90
+
+      - name: Comment on failed benchmark (Slack)
+        if: failure()
+        uses: slackapi/slack-github-action@v1
+        with:
+          payload: |
+            {
+              "text": "🚨 *NLP Benchmark Failed* — acurácia abaixo do limiar\nBranch: `${{ github.ref_name }}`\nWorkflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_OPS_WEBHOOK }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK

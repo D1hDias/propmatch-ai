@@ -22,7 +22,8 @@
     "e2e:headed": "playwright test --headed",
     "e2e:debug": "playwright test --debug",
     "db:seed": "tsx prisma/seed.ts",
-    "db:reset": "prisma migrate reset --force"
+    "db:reset": "prisma migrate reset --force",
+    "benchmark:nlp": "ts-node --project tsconfig.json tests/benchmarks/nlp-accuracy.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"
