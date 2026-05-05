@@ -1,6 +1,7 @@
 import 'server-only';
 import { prisma } from '@/server/db/client';
 import { extractBriefing } from './extract';
+import { hitlQueue } from './hitl-queue';
 import type { CreateBriefingInput } from '@/lib/schemas/briefing';
 
 const CONFIDENCE_AUTO_APPROVE = 0.85;
@@ -53,6 +54,12 @@ async function runExtraction(briefingId: string, rawText: string): Promise<void>
       reviewMode = 'hitl';
 
       await prisma.hitlMetric.create({ data: { briefingId } });
+      await hitlQueue.add('review', {
+        briefingId,
+        userId: (await prisma.briefing.findUniqueOrThrow({ where: { id: briefingId }, select: { userId: true } })).userId,
+        confidence,
+        missingFields: result.missingCriticalFields,
+      });
     } else if (confidence >= CONFIDENCE_AUTO_APPROVE) {
       reviewStatus = 'not_required';
       reviewMode = 'auto_approved';
