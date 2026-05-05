@@ -1,230 +1,189 @@
-# Runbook: LGPD Manual Deletion
+# LGPD Manual Deletion Playbook
 
-This runbook covers the manual deletion process used during the 14-day post-launch grace period (per PRD §5.5) and as a fallback if the automated worker fails.
+**Status:** Active — used until the automated cron (OPS-1, Sprint 2) is deployed to production.  
+**Audience:** Ops on-call, Legal, Engineering lead.  
+**Counsel sign-off:** Required before first use in production. Attach confirmation as a PR comment on the AUTH-4 PR.
 
-**Counsel sign-off:** Required before MVP launch. Sign-off attached to AUTH-4 PR.
-**Owner:** Operations, on-call rotation.
-**Estimated time:** 30–45 minutes per request.
+---
 
-## When to use this runbook
+## When to use this playbook
 
-- During the 14-day grace period after MVP launch, every deletion request is processed manually in parallel with the automated worker as a verification check.
-- After grace period: only when the automated worker fails or a request requires special handling (e.g., a broker disputing the scope of deletion).
+1. **Automated cron is not yet deployed** (MVP grace period, Sprint 1 / W1–W2).
+2. **Automated cron failed** — the `lgpd.delete_overdue` audit log event fired and engineering cannot fix within 24h.
+3. **Emergency request** — user submits a deletion request and requests immediate processing (7-day grace period waived by mutual agreement, documented in writing).
 
-## Prerequisites
+Do not run this playbook without confirming the requestor's identity first.
 
-- Read access to production PostgreSQL (via bastion host).
-- Read access to S3 production bucket.
-- Access to the `audit_log` table.
-- 1Password credentials for `propmatch-prod-readonly`.
-- A reviewer (peer engineer or counsel) to verify the steps before execution.
+---
 
-## SLA
+## Pre-conditions
 
-- Acknowledge request within 2 business hours.
-- Complete deletion within 30 days of the original request.
-- Send completion confirmation to the user within 1 business day of completion.
+- You have a terminal connected to the production VPS.
+- You have credentials for the `propmatch_service` Postgres role (`/etc/propmatch/secrets.env`).
+- The `lgpd_jobs` row for the user exists with `status = 'cancellable'` or `'in_progress'`.
+- Legal has confirmed the request is valid and the grace period has passed (or been waived).
 
-## Procedure
+---
 
-### Step 1: Verify the request
-
-The deletion request lands in the `lgpd_jobs` table with `job_type = 'delete'`. Confirm:
+## Step 1 — Identify the user and job
 
 ```sql
-SELECT id, user_id, status, requested_at, completed_at, cancellation_token
-FROM lgpd_jobs
-WHERE job_type = 'delete'
-  AND status IN ('cancellable', 'in_progress')
-ORDER BY requested_at ASC;
+-- Connect as service role
+\c propmatch_dev
+SET ROLE propmatch_service;
+
+-- Find the deletion job
+SELECT
+  j.id        AS job_id,
+  j.user_id,
+  j.status,
+  j.requested_at,
+  u.email,
+  u.name
+FROM lgpd_jobs j
+JOIN users u ON u.id = j.user_id
+WHERE j.job_type = 'delete'
+  AND j.status IN ('cancellable', 'in_progress')
+ORDER BY j.requested_at DESC;
 ```
 
-Verify:
-- The 7-day grace period has expired (`requested_at < NOW() - interval '7 days'`).
-- The user has not cancelled (`status` is not `cancelled`).
-- The user is the legitimate owner of the account (cross-reference with the email confirmation chain in support tickets if anything looks off).
+Record the `job_id` and `user_id`. Verify with the requestor that the `email` matches.
 
-If anything is unclear, escalate to counsel before proceeding.
+---
 
-### Step 2: Update job status
+## Step 2 — Advance to in_progress (if still cancellable)
 
 ```sql
 UPDATE lgpd_jobs
-SET status = 'in_progress'
+SET status = 'in_progress', cancellation_token = NULL
 WHERE id = '<job_id>'
   AND status = 'cancellable';
+-- Expected: UPDATE 1
 ```
 
-Verify exactly 1 row was updated. If 0 rows, the job has already been picked up by another process — stop and investigate.
+---
 
-### Step 3: Snapshot user data (audit safety)
-
-Before deletion, snapshot the user's data to a sealed evidence bucket. This is for legal hold purposes only — it is not given back to the user.
-
-```bash
-USER_ID="<uuid>"
-SNAPSHOT_KEY="lgpd-deletion-evidence/$(date +%Y-%m)/$USER_ID.json"
-
-psql -h <prod-host> -U readonly -d propmatch -t -A -c "
-  SELECT json_build_object(
-    'user', (SELECT row_to_json(u) FROM users u WHERE id = '$USER_ID'),
-    'briefings_count', (SELECT count(*) FROM briefings WHERE user_id = '$USER_ID'),
-    'clients_count', (SELECT count(*) FROM clients WHERE user_id = '$USER_ID'),
-    'messages_count', (SELECT count(*) FROM messages m JOIN briefings b ON b.id = m.briefing_id WHERE b.user_id = '$USER_ID')
-  );
-" | aws s3 cp - "s3://propmatch-legal-evidence/$SNAPSHOT_KEY" --sse aws:kms
-```
-
-The evidence bucket has a 7-year lifecycle policy and is access-restricted to legal counsel.
-
-### Step 4: Execute deletion
-
-Run as a single transaction:
+## Step 3 — Anonymize PII
 
 ```sql
 BEGIN;
 
--- Anonymize user record (do not DELETE; it preserves FK integrity in audit_log)
+-- Anonymize user record
 UPDATE users
-SET email = 'deleted-' || id::text || '@deleted.local',
-    name = 'Deleted User',
-    phone = NULL,
-    password_hash = '',
-    deleted_at = NOW()
+SET
+  email         = 'deleted_' || encode(sha256(id::text::bytea), 'hex')::text || '@deleted.local',
+  name          = '[Conta excluída]',
+  phone         = NULL,
+  password_hash = '[deleted]'
 WHERE id = '<user_id>';
+-- Expected: UPDATE 1
 
--- Cascade delete user-scoped tables
-DELETE FROM briefing_results WHERE briefing_id IN (
-  SELECT id FROM briefings WHERE user_id = '<user_id>'
-);
+-- Revoke active sessions
+UPDATE refresh_tokens
+SET revoked_at = NOW()
+WHERE user_id = '<user_id>'
+  AND revoked_at IS NULL;
+-- Expected: UPDATE N (any number >= 0)
 
-DELETE FROM messages WHERE briefing_id IN (
-  SELECT id FROM briefings WHERE user_id = '<user_id>'
-);
-
-DELETE FROM hitl_metrics WHERE briefing_id IN (
-  SELECT id FROM briefings WHERE user_id = '<user_id>'
-);
-
-DELETE FROM briefings WHERE user_id = '<user_id>';
-DELETE FROM clients WHERE user_id = '<user_id>';
-
--- Tokenize audit log entries (do not delete; legal retention)
-UPDATE audit_log
-SET actor_user_id = NULL,
-    details = jsonb_set(details, '{actor_tokenized}', 'true')
-WHERE actor_user_id = '<user_id>';
-
--- Mark the job complete
+-- Mark job complete
 UPDATE lgpd_jobs
-SET status = 'completed',
-    completed_at = NOW()
+SET status = 'completed', completed_at = NOW()
 WHERE id = '<job_id>';
+-- Expected: UPDATE 1
 
--- Audit-log the deletion itself
-INSERT INTO audit_log (id, actor_user_id, action, target_type, target_id, details, created_at)
-VALUES (gen_random_uuid(), NULL, 'lgpd.delete_completed', 'user', '<user_id>',
-        jsonb_build_object('job_id', '<job_id>', 'method', 'manual'),
-        NOW());
+-- Audit the manual deletion (actor_user_id kept for 24mo legal retention)
+INSERT INTO audit_log (actor_user_id, action, target_type, target_id, details)
+VALUES (
+  '<user_id>',
+  'lgpd.delete_executed_manual',
+  'user',
+  '<user_id>',
+  jsonb_build_object(
+    'job_id',       '<job_id>',
+    'performed_by', '<your-name>',
+    'reason',       'manual playbook execution'
+  )
+);
 
 COMMIT;
 ```
 
-**Do not commit until you and the reviewer have inspected the changes.** Use a savepoint or run inside a `BEGIN; ... ROLLBACK;` first to verify counts.
+---
 
-### Step 5: Delete S3 objects
-
-```bash
-USER_ID="<uuid>"
-
-# Property images: not deleted (not user data)
-# User-uploaded files: delete
-aws s3 rm "s3://propmatch-prod-uploads/users/$USER_ID/" --recursive
-
-# DSAR exports (if any): delete
-aws s3 rm "s3://propmatch-prod-exports/$USER_ID/" --recursive
-```
-
-### Step 6: Verify
+## Step 4 — Verify
 
 ```sql
--- Should return 0
-SELECT count(*) FROM briefings WHERE user_id = '<user_id>';
-SELECT count(*) FROM clients WHERE user_id = '<user_id>';
-SELECT count(*) FROM messages m JOIN briefings b ON b.id = m.briefing_id WHERE b.user_id = '<user_id>';
+-- User row should show anonymized data
+SELECT id, email, name, phone FROM users WHERE id = '<user_id>';
+-- email: deleted_<hash>@deleted.local
+-- name:  [Conta excluída]
+-- phone: NULL
 
--- User row should exist but be anonymized
-SELECT email, name, deleted_at FROM users WHERE id = '<user_id>';
--- Expected: email = 'deleted-...@deleted.local', name = 'Deleted User', deleted_at NOT NULL
+-- lgpd_jobs row should be completed
+SELECT id, status, completed_at FROM lgpd_jobs WHERE id = '<job_id>';
+-- status: completed
 
--- Audit log should be tokenized
-SELECT count(*) FROM audit_log WHERE actor_user_id = '<user_id>';
--- Expected: 0
-
-SELECT count(*) FROM audit_log WHERE details->>'actor_tokenized' = 'true' AND target_id = '<user_id>';
--- Expected: > 0
+-- audit_log should have the deletion event
+SELECT action, created_at FROM audit_log
+WHERE target_id = '<user_id>'::uuid
+ORDER BY created_at DESC
+LIMIT 5;
 ```
 
-### Step 7: Notify the user
+---
 
-Send a confirmation email from `privacy@propmatch.ai`:
+## Step 5 — Downstream data (deferred)
 
-> Olá,
->
-> Sua solicitação de exclusão de dados foi concluída em DD/MM/AAAA. Removemos seus dados pessoais do PropMatch AI conforme nossa política de privacidade e a LGPD.
->
-> Mantemos por 24 meses um registro tokenizado de auditoria, conforme exigência legal. Esses dados não permitem identificá-lo pessoalmente.
->
-> Se você tiver dúvidas, responda este e-mail.
->
-> Equipe PropMatch AI
-> privacy@propmatch.ai
+The following will be cleaned up by future cron jobs as they land in production:
 
-### Step 8: Document in ops log
+| Data | Cron ticket | Schedule |
+|------|-------------|----------|
+| `briefings.raw_text` | OPS-1 (S2) | Daily |
+| `clients` linked to this broker | OPS-3/OPS-4 (S5) | Daily |
+| `messages` phone hash | OPS-7 (S6) | Daily |
 
-Append to `ops-log.md` (in the ops repo):
+If an urgent full deletion is required before these crons exist, run the SQL from `docs/lgpd-compliance.md` manually for the relevant `user_id`, inside a transaction, and document in `audit_log`.
 
-```
-## YYYY-MM-DD — Manual LGPD deletion
+---
 
-- Job ID: <job_id>
-- User ID: <user_id> (or "redacted" once tokenization completes)
-- Operator: <your name>
-- Reviewer: <peer name>
-- Started: HH:MM
-- Completed: HH:MM
-- Anomalies: <none / describe>
+## Rollback
+
+If you need to undo a manual deletion (only possible before the transaction commits):
+
+```sql
+-- Only valid before COMMIT. Once committed, deletion is permanent by design.
+-- Contact engineering lead before attempting.
+ROLLBACK;
 ```
 
-## Failure modes and recovery
+Once committed, the deletion is permanent (LGPD Art.16 — exceptions only for legal obligations). Do not attempt to restore a committed deletion without explicit legal instruction.
 
-### "I deleted the wrong user"
+---
 
-Stop. Notify counsel and the user immediately. Backups retain user data for 30 days; restoration is possible but requires a coordinated effort. File an incident.
+## Checklist pós-execução
 
-### "The transaction failed mid-way"
+- [ ] Job marcado como `completed` no banco
+- [ ] Email do usuário anonimizado (`deleted_*@deleted.local`)
+- [ ] Sessões ativas revogadas (`refresh_tokens.revoked_at` preenchido)
+- [ ] Evento `lgpd.delete_executed_manual` visível no `audit_log`
+- [ ] Notificação enviada ao usuário (e-mail manual via Resend até S7)
+- [ ] Registro no canal `#lgpd-ops` no Slack com job_id e responsável
 
-Postgres transactions are atomic. If the `COMMIT` failed, nothing was deleted; re-run from Step 4. If the `COMMIT` succeeded but you got a connection error before seeing the result, run Step 6 verification — the deletion likely completed.
+---
 
-### "S3 delete failed"
+## Contacts
 
-S3 deletes are best-effort. If the API errors, retry. If a particular object is locked (legal hold), escalate to counsel.
+| Role | Who |
+|------|-----|
+| Engineering lead | Diego Dias |
+| Legal counsel | *[a preencher na assinatura do contrato]* |
+| DPO | *[a nomear antes do launch público]* |
 
-### "I don't see the lgpd_jobs row I expected"
+---
 
-Possible causes:
-- The user cancelled within the 7-day window.
-- The automated worker already processed it.
-- The user submitted the request very recently (< 7 days).
+## Changelog
 
-Check `status` and `requested_at` carefully before doing anything.
-
-## Approvals
-
-This runbook was reviewed and approved by:
-
-- [ ] Tech Lead — date
-- [ ] Privacy Counsel — date (sign-off required pre-MVP-launch)
-- [ ] Product Manager — date
-
-Updates to this runbook require re-approval from counsel.
+| Date | Author | Change |
+|------|--------|--------|
+| 2026-05-05 | Engineering | Initial draft |
+| — | Counsel | Pending sign-off |
