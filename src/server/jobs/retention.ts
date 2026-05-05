@@ -1,10 +1,15 @@
 import 'server-only';
 import { prisma } from '@/server/db/client';
+import { logger } from '@/server/lib/logger';
+import { advancePastGracePeriod, executeDeletion, flagOverdueJobs } from '@/server/lgpd/service';
 
 export interface RetentionResult {
   rawTextPurged: number;
   lgpdJobsCleaned: number;
   auditLogCleaned: number;
+  lgpdJobsAdvanced: number;
+  lgpdJobsExecuted: number;
+  lgpdOverdueFlagged: number;
   durationMs: number;
 }
 
@@ -45,6 +50,26 @@ export async function runRetentionJob(): Promise<RetentionResult> {
     where: { createdAt: { lt: cutoff24mo } },
   });
 
+  // --- AUTH-6: LGPD deletion lifecycle ---
+  // Advance jobs past grace period (cancellable → in_progress)
+  const lgpdJobsAdvanced = await advancePastGracePeriod();
+
+  // Execute deletions for all in_progress jobs
+  const readyJobs = await prisma.lgpdJob.findMany({
+    where: { jobType: 'delete', status: 'in_progress' },
+    select: { id: true },
+  });
+  for (const job of readyJobs) {
+    try {
+      await executeDeletion(job.id);
+    } catch (err) {
+      logger.error('lgpd deletion failed', { jobId: job.id, error: err });
+    }
+  }
+
+  // Flag overdue jobs
+  const lgpdOverdueFlagged = await flagOverdueJobs();
+
   const durationMs = Date.now() - start;
 
   // Log this run to audit_log so ops can verify execution
@@ -55,6 +80,9 @@ export async function runRetentionJob(): Promise<RetentionResult> {
         rawTextPurged: rawTextResult,
         lgpdJobsCleaned: lgpdResult.count,
         auditLogCleaned: auditResult.count,
+        lgpdJobsAdvanced,
+        lgpdJobsExecuted: readyJobs.length,
+        lgpdOverdueFlagged,
         durationMs,
       },
     },
@@ -64,6 +92,9 @@ export async function runRetentionJob(): Promise<RetentionResult> {
     rawTextPurged: rawTextResult,
     lgpdJobsCleaned: lgpdResult.count,
     auditLogCleaned: auditResult.count,
+    lgpdJobsAdvanced,
+    lgpdJobsExecuted: readyJobs.length,
+    lgpdOverdueFlagged,
     durationMs,
   };
 }

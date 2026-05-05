@@ -47,6 +47,13 @@ enum LgpdJobStatus {
   failed
 }
 
+// DATA-4 enum
+enum ClientArchiveStatus {
+  active
+  soft_archived
+  pending_delete
+}
+
 // DATA-1 enums
 enum BriefingReviewStatus {
   not_required
@@ -116,6 +123,7 @@ model User {
   auditEvents    AuditLog[]
   refreshTokens  RefreshToken[]
   briefings      Briefing[]
+  clients        Client[]
 
   @@index([agencyId])
   @@map("users")
@@ -154,16 +162,42 @@ model RefreshToken {
 }
 
 // ---------------------------------------------------------------------------
+// Sprint 5 tables — DATA-4
+// ---------------------------------------------------------------------------
+
+// DATA-4: Broker clients — real contacts or auto-created guests.
+// State machine: active → soft_archived → pending_delete (OPS-3/4/5 drive transitions).
+model Client {
+  id              String              @id @default(uuid()) @db.Uuid
+  userId          String              @map("user_id") @db.Uuid
+  name            String
+  phone           String?
+  isGuest         Boolean             @default(false) @map("is_guest")
+  archiveStatus   ClientArchiveStatus @default(active) @map("archive_status")
+  reminderSentAt  DateTime?           @map("reminder_sent_at") @db.Timestamptz
+  softArchivedAt  DateTime?           @map("soft_archived_at") @db.Timestamptz
+  autoPurgeAt     DateTime?           @map("auto_purge_at") @db.Timestamptz
+  notes           String?
+  createdAt       DateTime            @default(now()) @map("created_at") @db.Timestamptz
+
+  user            User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  briefings       Briefing[]
+
+  @@index([userId, archiveStatus])
+  @@index([autoPurgeAt])
+  @@index([userId, createdAt(sort: Desc)])
+  @@map("clients")
+}
+
+// ---------------------------------------------------------------------------
 // Sprint 2 tables — DATA-1
 // ---------------------------------------------------------------------------
 
-// DATA-1: Core briefing entity. client_id is nullable until Sprint 5 (DATA-5)
-// enforces NOT NULL after the clients table and backfill migration land.
+// DATA-1: Core briefing entity. client_id is NOT NULL after DATA-5 backfill migration.
 model Briefing {
   id                    String               @id @default(uuid()) @db.Uuid
   userId                String               @map("user_id") @db.Uuid
-  // client_id added as nullable now; NOT NULL enforced in DATA-5 migration
-  clientId              String?              @map("client_id") @db.Uuid
+  clientId              String               @map("client_id") @db.Uuid
   rawText               String               @map("raw_text")
   rawTextPurgeAt        DateTime             @map("raw_text_purge_at") @db.Timestamptz
   extractedCriteria     Json?                @map("extracted_criteria") @db.JsonB
@@ -176,6 +210,7 @@ model Briefing {
   createdAt             DateTime             @default(now()) @map("created_at") @db.Timestamptz
 
   user                  User                 @relation(fields: [userId], references: [id])
+  client                Client               @relation(fields: [clientId], references: [id])
   hitlMetrics           HitlMetric[]
   results               BriefingResult[]
 

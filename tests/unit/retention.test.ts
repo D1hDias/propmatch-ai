@@ -7,6 +7,8 @@ vi.mock('@/server/db/client', () => ({
     $executeRaw: vi.fn().mockResolvedValue(3),
     lgpdJob: {
       deleteMany: vi.fn().mockResolvedValue({ count: 2 }),
+      updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+      findMany: vi.fn().mockResolvedValue([]),
     },
     auditLog: {
       deleteMany: vi.fn().mockResolvedValue({ count: 10 }),

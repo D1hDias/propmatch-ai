@@ -1,0 +1,10 @@
+[Unit]
+Description=PropMatch AI — clients retention (OPS-3/4/5/6)
+After=network.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/propmatch/env
+ExecStart=/usr/bin/curl -sf -X POST \
+  -H "x-cron-secret: ${CRON_SECRET}" \
+  http://localhost:3000/api/v1/internal/cron/clients-retention

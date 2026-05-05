@@ -3,6 +3,7 @@
 import { useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
+import { ClientSelector } from '@/components/clients/ClientSelector';
 import { Loader, Send, FileText } from 'lucide-react';
 
 const MIN_CHARS = 10;
@@ -17,6 +18,7 @@ const EXAMPLES = [
 export function BriefingForm() {
   const router = useRouter();
   const [text, setText] = useState('');
+  const [clientId, setClientId] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -34,7 +36,7 @@ export function BriefingForm() {
       const res = await fetch('/api/v1/briefings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ raw_text: text }),
+        body: JSON.stringify({ raw_text: text, ...(clientId ? { client_id: clientId } : {}) }),
       });
 
       if (!res.ok) {
@@ -64,6 +66,9 @@ export function BriefingForm() {
 
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
+      {/* Client selector — FE-9 */}
+      <ClientSelector value={clientId} onChange={setClientId} disabled={submitting} />
+
       {/* Textarea */}
       <div className="space-y-2">
         <label

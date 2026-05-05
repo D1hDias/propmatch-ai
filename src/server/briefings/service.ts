@@ -17,10 +17,13 @@ export async function createBriefing(
 ): Promise<string> {
   const purgeAt = new Date(Date.now() + 18 * 30 * 24 * 60 * 60 * 1000); // ~18 months
 
+  // Resolve clientId — if none provided, create a guest client automatically
+  const clientId = input.client_id ?? await createGuestClient(userId);
+
   const briefing = await prisma.briefing.create({
     data: {
       userId,
-      clientId: input.client_id ?? null,
+      clientId,
       rawText: input.raw_text,
       rawTextPurgeAt: purgeAt,
       status: 'extracting',
@@ -94,7 +97,12 @@ async function runExtraction(briefingId: string, rawText: string): Promise<void>
 export async function getBriefing(briefingId: string, userId: string) {
   return prisma.briefing.findFirst({
     where: { id: briefingId, userId },
-    include: { hitlMetrics: { orderBy: { queuedAt: 'desc' }, take: 1 } },
+    include: {
+      hitlMetrics: { orderBy: { queuedAt: 'desc' }, take: 1 },
+      client: {
+        select: { id: true, name: true, isGuest: true, createdAt: true, softArchivedAt: true },
+      },
+    },
   });
 }
 
@@ -122,4 +130,21 @@ export async function listBriefings(userId: string, page = 1, perPage = 20) {
     prisma.briefing.count({ where: { userId } }),
   ]);
   return { items, total, page, perPage };
+}
+
+async function createGuestClient(userId: string): Promise<string> {
+  const today = new Date().toLocaleDateString('pt-BR', {
+    timeZone: 'America/Sao_Paulo',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  });
+  const client = await prisma.client.create({
+    data: {
+      userId,
+      name: `Guest – ${today}`,
+      isGuest: true,
+    },
+  });
+  return client.id;
 }

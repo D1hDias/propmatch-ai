@@ -4,6 +4,7 @@ import { ArrowLeft, Plus } from 'lucide-react';
 import { ExtractionResult } from '@/components/briefings/ExtractionResult';
 import { SearchTrigger } from '@/components/search/SearchTrigger';
 import { SearchResults } from '@/components/search/SearchResults';
+import { GuestArchiveBanner } from '@/components/clients/GuestArchiveBanner';
 import { Button } from '@/components/ui/button';
 
 export const metadata = { title: 'Briefing — PropMatch AI' };
@@ -49,6 +50,16 @@ export default async function BriefingDetailPage({ params }: Props) {
           </Link>
         </Button>
       </div>
+
+      {/* Guest archive warning — FE-11 */}
+      {briefing.client?.isGuest && (
+        <GuestArchiveBanner
+          clientId={briefing.client.id}
+          clientName={briefing.client.name}
+          createdAt={briefing.client.createdAt}
+          softArchivedAt={briefing.client.softArchivedAt}
+        />
+      )}
 
       {/* Extraction result */}
       <div className="bg-card rounded-xl shadow-card p-6 lg:p-8">
