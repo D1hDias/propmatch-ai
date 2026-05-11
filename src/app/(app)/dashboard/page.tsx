@@ -60,7 +60,7 @@ export default function DashboardPage() {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     })
       .then((r) => r.json())
-      .then((d: { data?: Analytics }) => setAnalytics(d.data ?? null))
+      .then((d: Analytics & { error?: unknown }) => setAnalytics(d.error ? null : d))
       .finally(() => setLoading(false));
   }, []);
 

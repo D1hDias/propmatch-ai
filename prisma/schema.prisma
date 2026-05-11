@@ -52,6 +52,8 @@ enum ClientArchiveStatus {
   active
   soft_archived
   pending_delete
+
+  @@map("client_archive_status")
 }
 
 // DATA-1 enums
@@ -387,6 +389,8 @@ model BriefingResult {
 enum MessageDeliveryMethod {
   clipboard
   whatsapp_api
+
+  @@map("message_delivery_method")
 }
 
 enum MessageDeliveryStatus {
@@ -396,6 +400,8 @@ enum MessageDeliveryStatus {
   delivered
   read
   failed
+
+  @@map("message_delivery_status")
 }
 
 // DATA-6: WhatsApp messages generated from briefing results.
