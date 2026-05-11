@@ -1,6 +1,7 @@
 'use client';
 
 import Image from 'next/image';
+import { TrendingUp } from 'lucide-react';
 
 export interface PropertyCardData {
   id: string;
@@ -43,6 +44,12 @@ const AMENITY_LABELS: Record<string, string> = {
   acessibilidade: 'Acessibilidade',
 };
 
+function matchColor(score: number): { bg: string; text: string; ring: string } {
+  if (score >= 80) return { bg: 'bg-[#4FD66E]', text: 'text-white', ring: 'ring-[#4FD66E]/30' };
+  if (score >= 60) return { bg: 'bg-[#FF9F00]', text: 'text-white', ring: 'ring-[#FF9F00]/30' };
+  return { bg: 'bg-[#FF5E5E]', text: 'text-white', ring: 'ring-[#FF5E5E]/30' };
+}
+
 function formatPrice(price: number, type: 'sale' | 'rent'): string {
   const formatted = new Intl.NumberFormat('pt-BR', {
     style: 'currency',
@@ -59,9 +66,12 @@ export function PropertyCard({ property, selected, onToggleSelect }: PropertyCar
     .map(([k]) => AMENITY_LABELS[k]!)
     .slice(0, 4);
 
+  const score = property.fitScore != null ? Math.round(property.fitScore) : null;
+  const colors = score != null ? matchColor(score) : null;
+
   return (
     <article
-      className={`relative rounded-xl border bg-card transition-all duration-150 overflow-hidden ${
+      className={`card-hover relative rounded-xl border bg-card overflow-hidden ${
         selected ? 'border-primary ring-2 ring-primary/20' : 'border-border hover:border-primary/40'
       }`}
     >
@@ -78,6 +88,14 @@ export function PropertyCard({ property, selected, onToggleSelect }: PropertyCar
             </svg>
           )}
         </button>
+      )}
+
+      {/* Match % badge — top right, prominent */}
+      {score != null && colors && (
+        <div className={`absolute top-3 right-3 z-10 flex items-center gap-1 rounded-full px-2.5 py-1 shadow-md ring-2 ${colors.bg} ${colors.ring}`}>
+          <TrendingUp className={`h-3 w-3 ${colors.text}`} />
+          <span className={`text-xs font-bold tabular-nums ${colors.text}`}>{score}%</span>
+        </div>
       )}
 
       {/* Photo */}

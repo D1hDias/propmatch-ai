@@ -176,4 +176,41 @@
     animation: shimmer 2s infinite;
     border-radius: var(--radius);
   }
+
+  /* FE-18: Staggered list item animation */
+  @keyframes fadeInUp {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  .animate-fade-in-up {
+    animation: fadeInUp 0.2s ease forwards;
+  }
+
+  /* FE-18: Pulse dot para estado searching */
+  @keyframes pulse-dot {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50%       { opacity: 0.5; transform: scale(0.85); }
+  }
+  .animate-pulse-dot {
+    animation: pulse-dot 1.2s ease-in-out infinite;
+  }
+
+  /* FE-18: Hover lift em cards */
+  .card-hover {
+    transition: box-shadow 0.15s ease, transform 0.15s ease;
+  }
+  .card-hover:hover {
+    box-shadow: 0 4px 16px -2px rgb(0 0 0 / 0.08);
+    transform: translateY(-1px);
+  }
+
+  /* FE-18: Flash verde ao copiar */
+  @keyframes flash-green {
+    0%   { background-color: transparent; }
+    30%  { background-color: hsl(var(--success) / 0.12); }
+    100% { background-color: transparent; }
+  }
+  .animate-flash-success {
+    animation: flash-green 0.6s ease forwards;
+  }
 }

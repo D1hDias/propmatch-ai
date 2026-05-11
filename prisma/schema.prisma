@@ -167,13 +167,39 @@ model RefreshToken {
 
 // DATA-4: Broker clients — real contacts or auto-created guests.
 // State machine: active → soft_archived → pending_delete (OPS-3/4/5 drive transitions).
+enum ClientUrgency {
+  ativo       // buscando ativamente — re-scan diário
+  prazo       // tem data limite — re-scan diário
+  explorando  // sem pressa — re-scan semanal
+
+  @@map("client_urgency")
+}
+
+enum ClientCrmStatus {
+  ativo        // perfil ativo, em busca
+  negociacao   // proposta em andamento
+  fechado      // negócio fechado
+  pausado      // cliente pausou a busca
+
+  @@map("client_crm_status")
+}
+
 model Client {
   id              String              @id @default(uuid()) @db.Uuid
   userId          String              @map("user_id") @db.Uuid
   name            String
   phone           String?
+  email           String?
   isGuest         Boolean             @default(false) @map("is_guest")
   archiveStatus   ClientArchiveStatus @default(active) @map("archive_status")
+  // S12: CRM pipeline status
+  crmStatus       ClientCrmStatus     @default(ativo) @map("crm_status")
+  // S12: urgency drives re-scan frequency
+  urgency         ClientUrgency       @default(explorando)
+  // S12: match threshold for notifications (0-100)
+  matchThreshold  Int                 @default(70) @map("match_threshold")
+  // S12: rich search profile stored as JSONB
+  profile         Json?               @db.JsonB
   reminderSentAt  DateTime?           @map("reminder_sent_at") @db.Timestamptz
   softArchivedAt  DateTime?           @map("soft_archived_at") @db.Timestamptz
   autoPurgeAt     DateTime?           @map("auto_purge_at") @db.Timestamptz
@@ -182,8 +208,11 @@ model Client {
 
   user            User                @relation(fields: [userId], references: [id], onDelete: Cascade)
   briefings       Briefing[]
+  messages        Message[]
 
   @@index([userId, archiveStatus])
+  @@index([userId, crmStatus])
+  @@index([userId, urgency])
   @@index([autoPurgeAt])
   @@index([userId, createdAt(sort: Desc)])
   @@map("clients")
@@ -202,6 +231,9 @@ model Briefing {
   rawTextPurgeAt        DateTime             @map("raw_text_purge_at") @db.Timestamptz
   extractedCriteria     Json?                @map("extracted_criteria") @db.JsonB
   extractionConfidence  Decimal?             @map("extraction_confidence") @db.Decimal(4, 3)
+  // S11: sources selected by the broker for this search
+  selectedPortals       String[]             @default([]) @map("selected_portals")
+  customUrls            String[]             @default([]) @map("custom_urls")
   reviewStatus          BriefingReviewStatus @default(pending) @map("review_status")
   reviewMode            BriefingReviewMode?  @map("review_mode")
   reviewedBy            String?              @map("reviewed_by") @db.Uuid
@@ -213,6 +245,7 @@ model Briefing {
   client                Client               @relation(fields: [clientId], references: [id])
   hitlMetrics           HitlMetric[]
   results               BriefingResult[]
+  messages              Message[]
 
   @@index([userId, createdAt(sort: Desc)])
   @@index([clientId])
@@ -245,6 +278,8 @@ enum PropertySource {
   zap
   vivareal
   mock
+  portal_x
+  partner_b
 }
 
 // DATA-2: Property type classification
@@ -343,6 +378,61 @@ model BriefingResult {
   @@id([briefingId, propertyId])
   @@index([briefingId, rank])
   @@map("briefing_results")
+}
+
+// ---------------------------------------------------------------------------
+// Sprint 6 tables — DATA-6
+// ---------------------------------------------------------------------------
+
+enum MessageDeliveryMethod {
+  clipboard
+  whatsapp_api
+}
+
+enum MessageDeliveryStatus {
+  pending
+  copied
+  sent
+  delivered
+  read
+  failed
+}
+
+// DATA-6: WhatsApp messages generated from briefing results.
+// OPS-7: phone_hash populated 90d post-send; raw phone purged.
+model Message {
+  id             String                @id @default(uuid()) @db.Uuid
+  briefingId     String                @map("briefing_id") @db.Uuid
+  clientId       String                @map("client_id") @db.Uuid
+  formattedText  String                @map("formatted_text")
+  deliveryMethod MessageDeliveryMethod @default(clipboard) @map("delivery_method")
+  deliveryStatus MessageDeliveryStatus @default(pending) @map("delivery_status")
+  sentAt         DateTime?             @map("sent_at") @db.Timestamptz
+  phoneHash      String?               @map("phone_hash") @db.VarChar(64)
+  createdAt      DateTime              @default(now()) @map("created_at") @db.Timestamptz
+
+  briefing       Briefing              @relation(fields: [briefingId], references: [id], onDelete: Cascade)
+  client         Client                @relation(fields: [clientId], references: [id])
+  shortLinks     ShortLink[]
+
+  @@index([briefingId])
+  @@index([clientId])
+  @@map("messages")
+}
+
+// DATA-6: Short link for property URLs in WhatsApp messages.
+model ShortLink {
+  id         String    @id @default(uuid()) @db.Uuid
+  slug       String    @unique @db.VarChar(10)
+  targetUrl  String    @map("target_url")
+  messageId  String?   @map("message_id") @db.Uuid
+  clicks     Int       @default(0)
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  message    Message?  @relation(fields: [messageId], references: [id], onDelete: SetNull)
+
+  @@index([messageId])
+  @@map("short_links")
 }
 
 // AUTH-1: Compliance and security audit trail (24-month legal retention)

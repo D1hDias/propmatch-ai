@@ -1,12 +1,12 @@
 import Link from 'next/link';
 import { ArrowLeft } from 'lucide-react';
-import { NewClientForm } from '@/components/clients/NewClientForm';
+import { ClientProfileForm } from '@/components/clients/ClientProfileForm';
 
 export const metadata = { title: 'Novo Cliente — PropMatch AI' };
 
 export default function NewClientPage() {
   return (
-    <div className="max-w-xl mx-auto space-y-6">
+    <div className="max-w-2xl mx-auto space-y-6">
       <Link
         href="/clients"
         className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
@@ -15,10 +15,14 @@ export default function NewClientPage() {
         Todos os clientes
       </Link>
 
-      <div className="bg-card rounded-xl shadow-card p-6 lg:p-8 space-y-4">
+      <div>
         <h1 className="text-xl font-bold text-foreground">Novo cliente</h1>
-        <NewClientForm />
+        <p className="text-sm text-muted-foreground mt-1">
+          Preencha o perfil completo para melhores resultados de match.
+        </p>
       </div>
+
+      <ClientProfileForm />
     </div>
   );
 }

@@ -47,9 +47,9 @@ const navSections: NavSection[] = [
   {
     title: 'Conta',
     items: [
-      { label: 'Perfil', href: '/perfil', icon: User },
-      { label: 'Plano & Billing', href: '/plano', icon: Zap },
-      { label: 'Configurações', href: '/configuracoes', icon: Settings },
+      { label: 'Perfil', href: '/settings/profile', icon: User },
+      { label: 'Plano & Billing', href: '/settings/billing', icon: Zap },
+      { label: 'Privacidade', href: '/settings/privacy', icon: Settings },
     ],
   },
 ];

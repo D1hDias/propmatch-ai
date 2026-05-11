@@ -29,7 +29,9 @@ export interface SearchJobData {
   briefingId: string;
   userId: string;
   criteria: unknown;
-  autoWiden?: boolean; // true when this is a widen re-run
+  portals?: string[];    // preset portals selected by broker (e.g. ['zap','vivareal'])
+  customUrls?: string[]; // arbitrary imobiliária URLs provided by broker
+  autoWiden?: boolean;   // true when this is a widen re-run
 }
 
 // ---------------------------------------------------------------------------
@@ -45,14 +47,14 @@ export function startSearchWorker(): void {
   const worker = new Worker<SearchJobData>(
     'search',
     async (job: Job<SearchJobData>) => {
-      const { briefingId, criteria: rawCriteria, autoWiden = false } = job.data;
+      const { briefingId, criteria: rawCriteria, portals, customUrls, autoWiden = false } = job.data;
       const criteria = rawCriteria as SearchCriteria;
 
-      logger.info('search job started', { briefingId, jobId: job.id, autoWiden });
+      logger.info('search job started', { briefingId, jobId: job.id, autoWiden, portals, customUrlCount: customUrls?.length ?? 0 });
 
       try {
-        // 1. Fan-out scraping
-        const { listings: raw, sourceErrors, durationMs } = await runSearch(criteria);
+        // 1. Fan-out scraping (preset portals + custom URLs)
+        const { listings: raw, sourceErrors, customUrlResults, durationMs } = await runSearch(criteria, { portals, customUrls });
 
         // 2. Geocode listings missing lat/lng (Nominatim, 1 req/s)
         const geocoded = await enrichWithGeo(raw);
@@ -84,11 +86,12 @@ export function startSearchWorker(): void {
             status: 'ready',
             autoWidenUsed: autoWiden,
             // Store widen proposals in extractedCriteria for SSE/FE to read
-            ...(widenProposals.length > 0
+            ...((widenProposals.length > 0 || customUrlResults.length > 0)
               ? {
                   extractedCriteria: {
                     ...(criteria as unknown as Record<string, unknown>),
-                    _widenProposals: widenProposals as unknown[],
+                    ...(widenProposals.length > 0 ? { _widenProposals: widenProposals as unknown[] } : {}),
+                    ...(customUrlResults.length > 0 ? { _customUrlResults: customUrlResults } : {}),
                   } as Parameters<typeof prisma.briefing.update>[0]['data']['extractedCriteria'],
                 }
               : {}),

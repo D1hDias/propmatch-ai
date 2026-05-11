@@ -3,81 +3,137 @@ import { logger } from '@/server/lib/logger';
 import { zapAdapter } from './adapters/zap';
 import { vivarealAdapter } from './adapters/vivareal';
 import { mockAdapter } from './adapters/mock';
+import { portalXAdapter } from './adapters/portal_x';
+import { partnerBAdapter } from './adapters/partner_b';
+import { scrapeCustomUrl } from './adapters/custom-url';
 import { startHealthMonitor } from './health-monitor';
 import type { NormalizedListing, SearchCriteria, SourceAdapter } from './types';
 
-const SOURCE_TIMEOUT_MS = 30_000; // 30s per source (scraping is slower than API)
+const SOURCE_TIMEOUT_MS = 30_000; // 30s per source
 
 // ---------------------------------------------------------------------------
-// Active adapters — determined by env flags
+// Preset adapter registry
 // ---------------------------------------------------------------------------
 
-function getAdapters(): SourceAdapter[] {
+const PRESET_ADAPTERS: Record<string, SourceAdapter> = {
+  zap: zapAdapter,
+  vivareal: vivarealAdapter,
+};
+
+function getPresetAdapters(selectedPortals?: string[]): SourceAdapter[] {
   if (process.env.SOURCE_MOCK === 'true') return [mockAdapter];
-  return [zapAdapter, vivarealAdapter];
+
+  // If broker selected specific portals, use only those; otherwise default to all
+  const wanted = selectedPortals && selectedPortals.length > 0
+    ? selectedPortals
+    : ['zap', 'vivareal'];
+
+  const adapters: SourceAdapter[] = wanted
+    .map((name) => PRESET_ADAPTERS[name])
+    .filter((a): a is SourceAdapter => a !== undefined);
+
+  // Source 2: portal_x via scraper VPS — always included when configured
+  if (process.env.SCRAPER_VPS_URL && process.env.SCRAPER_VPS_INTERNAL_KEY) {
+    adapters.push(portalXAdapter);
+  }
+
+  // Source 3: partner_b REST API — feature flagged OFF until LOI signed
+  if (process.env.FEATURE_SOURCE_PARTNER_B === 'true') {
+    adapters.push(partnerBAdapter);
+  }
+
+  return adapters;
 }
 
 let monitorsStarted = false;
 
-function ensureMonitorsRunning(): void {
+function ensureMonitorsRunning(adapters: SourceAdapter[]): void {
   if (monitorsStarted) return;
   monitorsStarted = true;
-  startHealthMonitor(getAdapters());
+  startHealthMonitor(adapters);
 }
 
 // ---------------------------------------------------------------------------
 // Fan-out search
 // ---------------------------------------------------------------------------
 
-interface SearchResult {
+export interface SearchOptions {
+  portals?: string[];    // broker-selected preset portals
+  customUrls?: string[]; // broker-provided imobiliária URLs
+}
+
+export interface SearchResult {
   listings: NormalizedListing[];
   sourceErrors: Array<{ source: string; error: string }>;
+  customUrlResults: Array<{ url: string; count: number; error?: string }>;
   durationMs: number;
 }
 
-export async function runSearch(criteria: SearchCriteria): Promise<SearchResult> {
-  ensureMonitorsRunning();
+export async function runSearch(
+  criteria: SearchCriteria,
+  options: SearchOptions = {},
+): Promise<SearchResult> {
+  const { portals, customUrls = [] } = options;
+  const adapters = getPresetAdapters(portals);
+  ensureMonitorsRunning(adapters);
 
-  const adapters = getAdapters();
   const start = Date.now();
 
   logger.info('search started', {
     city: criteria.city,
     neighborhood: criteria.neighborhood,
     purpose: criteria.purpose,
-    sources: adapters.map((a) => a.name),
+    presetSources: adapters.map((a) => a.name),
+    customUrlCount: customUrls.length,
   });
 
-  // Fan-out all sources in parallel with individual timeouts
-  const settled = await Promise.allSettled(
-    adapters.map((adapter) =>
-      Promise.race([
-        adapter.search(criteria),
-        new Promise<never>((_, reject) =>
-          setTimeout(
-            () => reject(new Error(`Source ${adapter.name} timed out after ${SOURCE_TIMEOUT_MS}ms`)),
-            SOURCE_TIMEOUT_MS,
+  // Fan-out preset adapters + custom URLs in parallel
+  const [presetSettled, customSettled] = await Promise.all([
+    // Preset portal adapters with individual timeouts
+    Promise.allSettled(
+      adapters.map((adapter) =>
+        Promise.race([
+          adapter.search(criteria),
+          new Promise<never>((_, reject) =>
+            setTimeout(
+              () => reject(new Error(`Source ${adapter.name} timed out after ${SOURCE_TIMEOUT_MS}ms`)),
+              SOURCE_TIMEOUT_MS,
+            ),
           ),
-        ),
-      ]),
+        ]),
+      ),
     ),
-  );
+    // Custom URLs — scrapeCustomUrl never throws, handles errors internally
+    Promise.all(customUrls.map((url) => scrapeCustomUrl(url, criteria))),
+  ]);
 
   const listings: NormalizedListing[] = [];
   const sourceErrors: Array<{ source: string; error: string }> = [];
+  const customUrlResults: Array<{ url: string; count: number; error?: string }> = [];
 
-  for (let i = 0; i < settled.length; i++) {
-    const result = settled[i]!;
+  // Collect preset results
+  for (let i = 0; i < presetSettled.length; i++) {
+    const result = presetSettled[i]!;
     const source = adapters[i]!.name;
 
     if (result.status === 'fulfilled') {
       listings.push(...result.value);
-      logger.info('source returned', { source, count: result.value.length });
+      logger.info('preset source returned', { source, count: result.value.length });
     } else {
       const error = String(result.reason);
       sourceErrors.push({ source, error });
-      logger.warn('source failed', { source, error });
+      logger.warn('preset source failed', { source, error });
     }
+  }
+
+  // Collect custom URL results
+  for (const result of customSettled) {
+    listings.push(...result.listings);
+    customUrlResults.push({
+      url: result.url,
+      count: result.listings.length,
+      error: result.error,
+    });
   }
 
   const durationMs = Date.now() - start;
@@ -85,7 +141,8 @@ export async function runSearch(criteria: SearchCriteria): Promise<SearchResult>
     total: listings.length,
     durationMs,
     sourceErrors: sourceErrors.length,
+    customUrlResults,
   });
 
-  return { listings, sourceErrors, durationMs };
+  return { listings, sourceErrors, customUrlResults, durationMs };
 }

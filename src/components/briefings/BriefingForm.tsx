@@ -4,7 +4,8 @@ import { useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { ClientSelector } from '@/components/clients/ClientSelector';
-import { Loader, Send, FileText } from 'lucide-react';
+import { Loader, Send, FileText, Plus, X } from 'lucide-react';
+import { PRESET_PORTALS, PORTAL_LABELS, type PresetPortal } from '@/lib/schemas/briefing';
 
 const MIN_CHARS = 10;
 const MAX_CHARS = 2000;
@@ -19,12 +20,35 @@ export function BriefingForm() {
   const router = useRouter();
   const [text, setText] = useState('');
   const [clientId, setClientId] = useState<string | null>(null);
+  const [selectedPortals, setSelectedPortals] = useState<PresetPortal[]>(['zap', 'vivareal']);
+  const [customUrls, setCustomUrls] = useState<string[]>([]);
+  const [customUrlInput, setCustomUrlInput] = useState('');
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const charCount = text.length;
-  const isValid = charCount >= MIN_CHARS && charCount <= MAX_CHARS;
+  const isValid = charCount >= MIN_CHARS && charCount <= MAX_CHARS && selectedPortals.length > 0;
+
+  function togglePortal(portal: PresetPortal) {
+    setSelectedPortals((prev) =>
+      prev.includes(portal)
+        ? prev.filter((p) => p !== portal)
+        : [...prev, portal],
+    );
+  }
+
+  function addCustomUrl() {
+    const url = customUrlInput.trim();
+    if (!url || customUrls.includes(url) || customUrls.length >= 10) return;
+    try { new URL(url); } catch { return; }
+    setCustomUrls((prev) => [...prev, url]);
+    setCustomUrlInput('');
+  }
+
+  function removeCustomUrl(url: string) {
+    setCustomUrls((prev) => prev.filter((u) => u !== url));
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -36,7 +60,12 @@ export function BriefingForm() {
       const res = await fetch('/api/v1/briefings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ raw_text: text, ...(clientId ? { client_id: clientId } : {}) }),
+        body: JSON.stringify({
+          raw_text: text,
+          ...(clientId ? { client_id: clientId } : {}),
+          portals: selectedPortals,
+          custom_urls: customUrls,
+        }),
       });
 
       if (!res.ok) {
@@ -103,6 +132,86 @@ export function BriefingForm() {
             <span className="text-xs text-muted-foreground">
               Mínimo {MIN_CHARS} caracteres
             </span>
+          )}
+        </div>
+      </div>
+
+      {/* Portal selection */}
+      <div className="space-y-3">
+        <div>
+          <p className="text-sm font-semibold text-foreground">Onde buscar</p>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Selecione os portais e/ou cole links de imobiliárias específicas.
+          </p>
+        </div>
+
+        {/* Preset portal toggles */}
+        <div className="flex flex-wrap gap-2">
+          {PRESET_PORTALS.map((portal) => {
+            const active = selectedPortals.includes(portal);
+            return (
+              <button
+                key={portal}
+                type="button"
+                onClick={() => togglePortal(portal)}
+                disabled={submitting}
+                className={`flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-50 ${
+                  active
+                    ? 'border-primary bg-primary/5 text-primary'
+                    : 'border-border bg-muted/30 text-muted-foreground hover:border-primary/40 hover:text-foreground'
+                }`}
+              >
+                <span className={`h-2 w-2 rounded-full ${active ? 'bg-primary' : 'bg-muted-foreground/40'}`} />
+                {PORTAL_LABELS[portal]}
+              </button>
+            );
+          })}
+        </div>
+        {selectedPortals.length === 0 && (
+          <p className="text-xs text-destructive">Selecione pelo menos um portal.</p>
+        )}
+
+        {/* Custom URLs */}
+        <div className="space-y-2">
+          <div className="flex gap-2">
+            <input
+              type="url"
+              placeholder="Cole o link de uma imobiliária ou portal…"
+              value={customUrlInput}
+              onChange={(e) => setCustomUrlInput(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addCustomUrl(); } }}
+              disabled={submitting || customUrls.length >= 10}
+              className="flex-1 rounded-lg border border-border bg-muted/30 px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 disabled:opacity-50"
+            />
+            <button
+              type="button"
+              onClick={addCustomUrl}
+              disabled={submitting || !customUrlInput.trim() || customUrls.length >= 10}
+              className="flex items-center gap-1 rounded-lg border border-border bg-muted/30 px-3 py-2 text-sm text-muted-foreground hover:bg-primary/5 hover:text-primary hover:border-primary/40 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              <Plus className="h-4 w-4" />
+              Adicionar
+            </button>
+          </div>
+          {customUrls.length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {customUrls.map((url) => (
+                <span
+                  key={url}
+                  className="flex items-center gap-1 rounded-full bg-secondary/10 px-2.5 py-1 text-xs text-secondary"
+                >
+                  <span className="max-w-[200px] truncate">{new URL(url).hostname}</span>
+                  <button
+                    type="button"
+                    onClick={() => removeCustomUrl(url)}
+                    className="hover:text-destructive transition-colors"
+                    aria-label={`Remover ${url}`}
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </span>
+              ))}
+            </div>
           )}
         </div>
       </div>

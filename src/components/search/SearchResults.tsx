@@ -4,12 +4,19 @@ import { useEffect, useRef, useState } from 'react';
 import { PropertyCard, type PropertyCardData } from './PropertyCard';
 import { WidenProposals, type WidenProposal } from './WidenProposals';
 import { SearchFilters, applyFilters, type FilterState } from './SearchFilters';
+import { WhatsAppMessageModal } from '@/components/messaging/WhatsAppMessageModal';
 
 interface SearchResultsProps {
   briefingId: string;
 }
 
 type SearchState = 'connecting' | 'searching' | 'done' | 'error';
+
+interface CustomUrlResult {
+  url: string;
+  count: number;
+  error?: string;
+}
 
 export function SearchResults({ briefingId }: SearchResultsProps) {
   const [state, setState] = useState<SearchState>('connecting');
@@ -18,6 +25,7 @@ export function SearchResults({ briefingId }: SearchResultsProps) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [total, setTotal] = useState<number | null>(null);
   const [widenProposals, setWidenProposals] = useState<WidenProposal[]>([]);
+  const [customUrlResults, setCustomUrlResults] = useState<CustomUrlResult[]>([]);
   const [filters, setFilters] = useState<FilterState>({
     sort: 'score',
     bedroomsMin: null,
@@ -26,6 +34,7 @@ export function SearchResults({ briefingId }: SearchResultsProps) {
   });
   // Incremented when auto-widen is applied — triggers SSE reconnect via useEffect dependency
   const [searchEpoch, setSearchEpoch] = useState(0);
+  const [showModal, setShowModal] = useState(false);
   const eventSourceRef = useRef<EventSource | null>(null);
 
   useEffect(() => {
@@ -49,9 +58,10 @@ export function SearchResults({ briefingId }: SearchResultsProps) {
     });
 
     es.addEventListener('search_complete', (e) => {
-      const data = JSON.parse(e.data) as { total: number; widenProposals?: WidenProposal[] };
+      const data = JSON.parse(e.data) as { total: number; widenProposals?: WidenProposal[]; customUrlResults?: CustomUrlResult[] };
       setTotal(data.total);
       setWidenProposals(data.widenProposals ?? []);
+      setCustomUrlResults(data.customUrlResults ?? []);
       setState('done');
       es.close();
     });
@@ -88,6 +98,7 @@ export function SearchResults({ briefingId }: SearchResultsProps) {
     setSelected(new Set());
     setTotal(null);
     setWidenProposals([]);
+    setCustomUrlResults([]);
     setFilters({ sort: 'score', bedroomsMin: null, priceMax: null, neighborhood: null });
     setState('connecting');
     setSearchEpoch((e) => e + 1); // reconnects EventSource
@@ -107,13 +118,14 @@ export function SearchResults({ briefingId }: SearchResultsProps) {
         {/* Render results as they arrive */}
         {listings.length > 0 && (
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {listings.map((p) => (
-              <PropertyCard
-                key={p.id}
-                property={p}
-                selected={selected.has(p.id)}
-                onToggleSelect={toggleSelect}
-              />
+            {listings.map((p, i) => (
+              <div key={p.id} className="animate-fade-in-up" style={{ animationDelay: `${Math.min(i * 40, 400)}ms` }}>
+                <PropertyCard
+                  property={p}
+                  selected={selected.has(p.id)}
+                  onToggleSelect={toggleSelect}
+                />
+              </div>
             ))}
           </div>
         )}
@@ -141,6 +153,32 @@ export function SearchResults({ briefingId }: SearchResultsProps) {
 
   return (
     <div className="space-y-4">
+      {/* Custom URL results feedback — S11-4 */}
+      {customUrlResults.length > 0 && (
+        <div className="rounded-xl border border-border bg-card p-4 space-y-2">
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+            Links adicionados
+          </p>
+          <div className="space-y-1.5">
+            {customUrlResults.map((r) => {
+              const hostname = (() => { try { return new URL(r.url).hostname; } catch { return r.url; } })();
+              const failed = r.error != null;
+              return (
+                <div key={r.url} className="flex items-center gap-2 text-sm">
+                  <span className={`h-2 w-2 rounded-full flex-shrink-0 ${failed ? 'bg-[#FF5E5E]' : 'bg-[#4FD66E]'}`} />
+                  <span className="text-foreground font-medium truncate max-w-[200px]">{hostname}</span>
+                  {failed ? (
+                    <span className="text-[#FF5E5E] text-xs">não foi possível acessar</span>
+                  ) : (
+                    <span className="text-muted-foreground text-xs">{r.count} imóvel{r.count !== 1 ? 'is' : ''} encontrado{r.count !== 1 ? 's' : ''}</span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {/* Auto-widen proposals — shown when < 5 results */}
       {widenProposals.length > 0 && (
         <WidenProposals
@@ -164,9 +202,7 @@ export function SearchResults({ briefingId }: SearchResultsProps) {
         {selected.size > 0 && (
           <button
             className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-sm hover:bg-primary/90"
-            onClick={() => {
-              /* MSG-1 Sprint 6 — generate WhatsApp message */
-            }}
+            onClick={() => setShowModal(true)}
           >
             Gerar mensagem WhatsApp ({selected.size})
           </button>
@@ -191,15 +227,25 @@ export function SearchResults({ briefingId }: SearchResultsProps) {
         </div>
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {visible.map((p) => (
-            <PropertyCard
-              key={p.id}
-              property={p}
-              selected={selected.has(p.id)}
-              onToggleSelect={toggleSelect}
-            />
+          {visible.map((p, i) => (
+            <div key={p.id} className="animate-fade-in-up" style={{ animationDelay: `${Math.min(i * 40, 400)}ms` }}>
+              <PropertyCard
+                property={p}
+                selected={selected.has(p.id)}
+                onToggleSelect={toggleSelect}
+              />
+            </div>
           ))}
         </div>
+      )}
+
+      {showModal && (
+        <WhatsAppMessageModal
+          briefingId={briefingId}
+          selectedIds={[...selected]}
+          listings={listings}
+          onClose={() => setShowModal(false)}
+        />
       )}
     </div>
   );

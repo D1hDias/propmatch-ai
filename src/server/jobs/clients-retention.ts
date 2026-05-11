@@ -20,6 +20,7 @@ export interface ClientRetentionResult {
   guestsHardDeleted: number;
   softArchivedPurged: number;
   auditLogTokenized: number;
+  messagesPhoneHashed: number;
   durationMs: number;
 }
 
@@ -88,11 +89,34 @@ export async function runClientRetentionJob(): Promise<ClientRetentionResult> {
 
   logger.info('ops-6 complete', { auditLogTokenized: Number(tokenized) });
 
+  // OPS-7: Hash phone in messages sent ≥90 days ago (LGPD minimization).
+  // The raw phone lives on `clients.phone`; messages stores only the hash for analytics.
+  const day90ops7 = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
+  const phoneHashed = await prisma.$executeRaw`
+    UPDATE messages
+    SET phone_hash = encode(
+      digest(
+        (SELECT phone FROM clients WHERE clients.id = messages.client_id),
+        'sha256'
+      ),
+      'hex'
+    )
+    WHERE sent_at IS NOT NULL
+      AND sent_at <= ${day90ops7}
+      AND phone_hash IS NULL
+      AND EXISTS (
+        SELECT 1 FROM clients WHERE clients.id = messages.client_id AND phone IS NOT NULL
+      )
+  `;
+
+  logger.info('ops-7 complete', { messagesPhoneHashed: Number(phoneHashed) });
+
   return {
     guestsSoftArchived: Number(softArchived),
     guestsHardDeleted: Number(hardDeleted),
     softArchivedPurged: Number(purged),
     auditLogTokenized: Number(tokenized),
+    messagesPhoneHashed: Number(phoneHashed),
     durationMs: Date.now() - start,
   };
 }

@@ -26,6 +26,8 @@ export async function createBriefing(
       clientId,
       rawText: input.raw_text,
       rawTextPurgeAt: purgeAt,
+      selectedPortals: input.portals ?? ['zap', 'vivareal'],
+      customUrls: input.custom_urls ?? [],
       status: 'extracting',
       reviewStatus: 'pending',
     },

@@ -50,6 +50,8 @@ export async function POST(
       briefingId: id,
       userId: ctx.sub,
       criteria: briefing.extractedCriteria,
+      portals: briefing.selectedPortals,
+      customUrls: briefing.customUrls,
     });
 
     return apiSuccess({ jobId: job.id, status: 'searching' }, 202);

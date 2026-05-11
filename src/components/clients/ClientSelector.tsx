@@ -1,13 +1,16 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { User, UserPlus } from 'lucide-react';
+import Link from 'next/link';
+import { Target, User, UserPlus } from 'lucide-react';
 
 interface Client {
   id: string;
   name: string;
   phone: string | null;
   isGuest: boolean;
+  matchThreshold: number;
+  urgency: 'ativo' | 'prazo' | 'explorando';
 }
 
 interface ClientSelectorProps {
@@ -15,6 +18,12 @@ interface ClientSelectorProps {
   onChange: (clientId: string | null) => void;
   disabled?: boolean;
 }
+
+const URGENCY_LABELS = {
+  ativo: 'Buscando ativamente',
+  prazo: 'Tem prazo definido',
+  explorando: 'Explorando o mercado',
+};
 
 export function ClientSelector({ value, onChange, disabled }: ClientSelectorProps) {
   const [clients, setClients] = useState<Client[]>([]);
@@ -30,6 +39,8 @@ export function ClientSelector({ value, onChange, disabled }: ClientSelectorProp
       .catch(() => setClients([]))
       .finally(() => setLoading(false));
   }, []);
+
+  const selected = clients.find((c) => c.id === value) ?? null;
 
   return (
     <div className="space-y-2">
@@ -56,7 +67,7 @@ export function ClientSelector({ value, onChange, disabled }: ClientSelectorProp
           </select>
         </div>
 
-        <a
+        <Link
           href="/clients/new"
           target="_blank"
           rel="noopener noreferrer"
@@ -65,8 +76,20 @@ export function ClientSelector({ value, onChange, disabled }: ClientSelectorProp
         >
           <UserPlus className="w-4 h-4" />
           <span className="hidden sm:inline">Novo</span>
-        </a>
+        </Link>
       </div>
+
+      {/* Preview do cliente selecionado */}
+      {selected && (
+        <div className="flex items-center gap-3 rounded-lg border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+          <span className="flex items-center gap-1 text-foreground font-medium">
+            <Target className="w-3.5 h-3.5 text-primary shrink-0" />
+            Match ≥ {selected.matchThreshold}%
+          </span>
+          <span className="text-border">·</span>
+          <span>{URGENCY_LABELS[selected.urgency]}</span>
+        </div>
+      )}
     </div>
   );
 }

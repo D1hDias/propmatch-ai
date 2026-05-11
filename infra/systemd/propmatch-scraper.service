@@ -1,0 +1,22 @@
+[Unit]
+Description=PropMatch Scraper VPS API
+After=network.target
+
+[Service]
+Type=simple
+User=propmatch
+WorkingDirectory=/opt/propmatch-scraper
+EnvironmentFile=/etc/propmatch-scraper.env
+ExecStart=/usr/local/bin/node --import tsx scraper-api.ts
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=propmatch-scraper
+
+# Headless Chromium needs a writable temp dir
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

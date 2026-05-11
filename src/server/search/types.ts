@@ -28,7 +28,7 @@ export interface SearchCriteria {
 
 export interface NormalizedListing {
   /** Source identifier */
-  source: 'zap' | 'vivareal' | 'mock';
+  source: 'zap' | 'vivareal' | 'mock' | 'portal_x' | 'partner_b';
   /** External ID from the source portal */
   externalId: string;
   /** Canonical listing URL */
@@ -80,7 +80,7 @@ export interface HealthStatus {
 }
 
 export interface SourceAdapter {
-  readonly name: 'zap' | 'vivareal' | 'mock';
+  readonly name: 'zap' | 'vivareal' | 'mock' | 'portal_x' | 'partner_b';
   search(criteria: SearchCriteria): Promise<NormalizedListing[]>;
   healthCheck(): Promise<HealthStatus>;
 }

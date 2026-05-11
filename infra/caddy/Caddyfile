@@ -1,0 +1,107 @@
+# PropMatch AI — Caddyfile
+# INFRA-6: Cache headers tuning para pilot + launch público.
+# Caddy gerencia TLS automaticamente via Let's Encrypt.
+
+propmatch.com.br {
+  # Reverse proxy para o processo Next.js (porta 3000)
+  reverse_proxy localhost:3000 {
+    # Aumenta timeout para SSE (search stream pode durar até 60s)
+    transport http {
+      response_header_timeout 65s
+      dial_timeout 5s
+    }
+
+    # Repassa cabeçalhos de IP real para o app
+    header_up X-Real-IP {remote_host}
+    header_up X-Forwarded-For {remote_host}
+    header_up X-Forwarded-Proto {scheme}
+  }
+
+  # ------------------------------------------------------------------
+  # Ativos estáticos do Next.js (_next/static) — imutáveis por hash
+  # Cache longo no cliente; Cloudflare faz cache no edge.
+  # ------------------------------------------------------------------
+  @static {
+    path /_next/static/*
+    path /favicon.ico
+    path /robots.txt
+    path /sitemap.xml
+  }
+  header @static {
+    Cache-Control "public, max-age=31536000, immutable"
+    # Permite que Cloudflare faça cache no edge
+    Vary "Accept-Encoding"
+  }
+
+  # ------------------------------------------------------------------
+  # Fotos de imóveis servidas via proxy (se houver rota interna)
+  # Cache moderado — conteúdo externo pode mudar
+  # ------------------------------------------------------------------
+  @photos {
+    path /api/v1/photos/*
+  }
+  header @photos {
+    Cache-Control "public, max-age=86400, stale-while-revalidate=3600"
+    Vary "Accept-Encoding"
+  }
+
+  # ------------------------------------------------------------------
+  # SSE endpoints — nunca fazer cache, desabilitar buffering
+  # ------------------------------------------------------------------
+  @sse {
+    path /api/v1/briefings/*/stream
+  }
+  header @sse {
+    Cache-Control "no-store"
+    X-Accel-Buffering "no"
+    # Instrui Cloudflare a não fazer cache nem buffer do SSE
+    CF-Cache-Status "BYPASS"
+  }
+
+  # ------------------------------------------------------------------
+  # API em geral — sem cache (autenticada e personalizada)
+  # ------------------------------------------------------------------
+  @api {
+    path /api/*
+  }
+  header @api {
+    Cache-Control "no-store, no-cache, must-revalidate"
+    Pragma "no-cache"
+  }
+
+  # ------------------------------------------------------------------
+  # Short link redirects — cache curto (clicks são rastreados no DB)
+  # ------------------------------------------------------------------
+  @shortlinks {
+    path /r/*
+  }
+  header @shortlinks {
+    Cache-Control "public, max-age=300, stale-while-revalidate=60"
+  }
+
+  # ------------------------------------------------------------------
+  # Segurança — cabeçalhos globais
+  # ------------------------------------------------------------------
+  header {
+    # Remove header que expõe a stack
+    -Server
+    X-Content-Type-Options "nosniff"
+    X-Frame-Options "DENY"
+    Referrer-Policy "strict-origin-when-cross-origin"
+    Permissions-Policy "camera=(), microphone=(), geolocation=()"
+  }
+
+  # Logs estruturados compatíveis com BetterStack
+  log {
+    output file /var/log/caddy/propmatch.log {
+      roll_size 100MiB
+      roll_keep 10
+    }
+    format json
+  }
+}
+
+# Redireciona www → apex
+www.propmatch.com.br {
+  redir https://propmatch.com.br{uri} permanent
+}
