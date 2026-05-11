@@ -1,10 +1,11 @@
+'use client';
+
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { Plus, CheckCircle, AlertCircle, Loader } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { EmptyBriefingsState } from '@/components/briefings/BriefingForm';
-
-export const metadata = { title: 'Briefings — PropMatch AI' };
 
 const STATUS_CONFIG = {
   ready: { label: 'Pronto', icon: CheckCircle, className: 'text-success' },
@@ -13,27 +14,35 @@ const STATUS_CONFIG = {
   failed: { label: 'Falhou', icon: AlertCircle, className: 'text-danger' },
 } as const;
 
-async function fetchBriefings() {
-  const baseUrl = process.env.NEXT_PUBLIC_BASE_URL ?? 'http://localhost:3000';
-  const res = await fetch(`${baseUrl}/api/v1/briefings?per_page=50`, {
-    next: { revalidate: 10 },
-  });
-  if (!res.ok) return { items: [], total: 0 };
-  return res.json() as Promise<{
-    items: {
-      id: string;
-      rawText: string;
-      status: keyof typeof STATUS_CONFIG;
-      reviewStatus: string;
-      extractionConfidence: number | null;
-      createdAt: string;
-    }[];
-    total: number;
-  }>;
-}
+type Briefing = {
+  id: string;
+  rawText: string;
+  status: keyof typeof STATUS_CONFIG;
+  reviewStatus: string;
+  extractionConfidence: number | null;
+  createdAt: string;
+};
 
-export default async function BriefingsPage() {
-  const { items, total } = await fetchBriefings();
+export default function BriefingsPage() {
+  const [briefings, setBriefings] = useState<Briefing[]>([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const token = sessionStorage.getItem('access_token');
+    fetch('/api/v1/briefings?per_page=50', {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    })
+      .then((r) => r.json())
+      .then((d: { items?: Briefing[]; total?: number; error?: unknown }) => {
+        if (!d.error) {
+          setBriefings(d.items ?? []);
+          setTotal(d.total ?? 0);
+        }
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, []);
 
   return (
     <div className="space-y-6">
@@ -41,7 +50,7 @@ export default async function BriefingsPage() {
         <div>
           <h2 className="text-2xl font-bold text-foreground">Briefings</h2>
           <p className="text-muted-foreground mt-1">
-            {total > 0 ? `${total} briefings encontrados` : 'Nenhum briefing ainda'}
+            {loading ? 'Carregando…' : total > 0 ? `${total} briefings encontrados` : 'Nenhum briefing ainda'}
           </p>
         </div>
         <Button asChild className="gap-2">
@@ -52,7 +61,13 @@ export default async function BriefingsPage() {
         </Button>
       </div>
 
-      {items.length === 0 ? (
+      {loading ? (
+        <div className="space-y-3">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <div key={i} className="h-16 bg-muted rounded-xl animate-pulse" />
+          ))}
+        </div>
+      ) : briefings.length === 0 ? (
         <EmptyBriefingsState />
       ) : (
         <div className="bg-card rounded-xl shadow-card overflow-hidden">
@@ -75,7 +90,7 @@ export default async function BriefingsPage() {
                 </tr>
               </thead>
               <tbody>
-                {items.map((briefing, idx) => {
+                {briefings.map((briefing, idx) => {
                   const cfg = STATUS_CONFIG[briefing.status] ?? STATUS_CONFIG.failed;
                   const Icon = cfg.icon;
                   const confidence = briefing.extractionConfidence;

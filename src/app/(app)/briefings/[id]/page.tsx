@@ -1,3 +1,7 @@
+'use client';
+
+import { useEffect, useState } from 'react';
+import { use } from 'react';
 import { notFound } from 'next/navigation';
 import Link from 'next/link';
 import { ArrowLeft, Plus } from 'lucide-react';
@@ -6,31 +10,57 @@ import { SearchTrigger } from '@/components/search/SearchTrigger';
 import { SearchResults } from '@/components/search/SearchResults';
 import { GuestArchiveBanner } from '@/components/clients/GuestArchiveBanner';
 import { Button } from '@/components/ui/button';
+import type { ExtractedCriteria } from '@/server/briefings/extract';
 
-export const metadata = { title: 'Briefing — PropMatch AI' };
-
-async function fetchBriefing(id: string) {
-  const baseUrl = process.env.NEXT_PUBLIC_BASE_URL ?? 'http://localhost:3000';
-  const res = await fetch(`${baseUrl}/api/v1/briefings/${id}`, {
-    next: { revalidate: 2 },
-  });
-  if (res.status === 404) return null;
-  if (!res.ok) throw new Error('Failed to fetch briefing');
-  return res.json();
+interface BriefingDetail {
+  id: string;
+  rawText: string;
+  status: 'extracting' | 'searching' | 'ready' | 'failed';
+  reviewStatus: string;
+  extractionConfidence: number | null;
+  extractedCriteria: ExtractedCriteria | null;
+  createdAt: string;
+  hitlMetrics: { queuedAt: string }[];
+  client?: { id: string; name: string; isGuest: boolean; createdAt: string; softArchivedAt: string | null };
 }
 
 interface Props {
   params: Promise<{ id: string }>;
 }
 
-export default async function BriefingDetailPage({ params }: Props) {
-  const { id } = await params;
-  const briefing = await fetchBriefing(id);
+export default function BriefingDetailPage({ params }: Props) {
+  const { id } = use(params);
+  const [briefing, setBriefing] = useState<BriefingDetail | null | undefined>(undefined);
 
-  if (!briefing) notFound();
+  useEffect(() => {
+    const token = sessionStorage.getItem('access_token');
+    fetch(`/api/v1/briefings/${id}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    })
+      .then((r) => {
+        if (r.status === 404) { setBriefing(null); return null; }
+        if (!r.ok) throw new Error('fetch failed');
+        return r.json();
+      })
+      .then((d) => { if (d !== null) setBriefing(d as BriefingDetail); })
+      .catch(() => setBriefing(null));
+  }, [id]);
+
+  if (briefing === undefined) {
+    return (
+      <div className="max-w-5xl mx-auto space-y-6">
+        <div className="h-8 w-48 bg-muted rounded animate-pulse" />
+        <div className="h-48 bg-muted rounded-xl animate-pulse" />
+        <div className="h-64 bg-muted rounded-xl animate-pulse" />
+      </div>
+    );
+  }
+
+  if (briefing === null) return notFound();
 
   const isReady = briefing.status === 'ready';
   const isSearching = briefing.status === 'searching';
+  const client = briefing.client;
 
   return (
     <div className="max-w-5xl mx-auto space-y-8">
@@ -51,13 +81,13 @@ export default async function BriefingDetailPage({ params }: Props) {
         </Button>
       </div>
 
-      {/* Guest archive warning — FE-11 */}
-      {briefing.client?.isGuest && (
+      {/* Guest archive warning */}
+      {client?.isGuest && (
         <GuestArchiveBanner
-          clientId={briefing.client.id}
-          clientName={briefing.client.name}
-          createdAt={briefing.client.createdAt}
-          softArchivedAt={briefing.client.softArchivedAt}
+          clientId={client.id}
+          clientName={client.name}
+          createdAt={client.createdAt}
+          softArchivedAt={client.softArchivedAt}
         />
       )}
 
@@ -66,17 +96,15 @@ export default async function BriefingDetailPage({ params }: Props) {
         <ExtractionResult briefingId={id} initialData={briefing} />
       </div>
 
-      {/* Search section — shown after extraction is done */}
+      {/* Search section */}
       {briefing.extractedCriteria && (
         <section className="space-y-4">
           <div className="flex items-center justify-between">
             <h2 className="text-lg font-semibold">Imóveis encontrados</h2>
-            {/* Only show Buscar button if not already searching/ready */}
             {!isSearching && !isReady && (
               <SearchTrigger briefingId={id} />
             )}
           </div>
-
           {(isSearching || isReady) && <SearchResults briefingId={id} />}
         </section>
       )}
