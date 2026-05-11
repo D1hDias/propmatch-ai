@@ -21,8 +21,8 @@ export async function scrapeWithPlaywright(
 
   // Dynamic import — keeps Playwright out of the main bundle unless needed
   // @playwright/test re-exports chromium for programmatic use
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { chromium } = require('@playwright/test') as typeof import('@playwright/test');
+  // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-explicit-any
+  const { chromium } = require('@playwright/test') as any;
 
   const browser = await chromium.launch({ headless: true });
   let pageText = '';

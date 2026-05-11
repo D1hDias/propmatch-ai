@@ -3,6 +3,8 @@ import { refresh } from '@/server/auth/service';
 import { AppError } from '@/server/lib/errors';
 import { apiSuccess, apiError, setRefreshCookie, REFRESH_COOKIE } from '@/server/lib/response';
 
+export const dynamic = 'force-dynamic';
+
 export async function POST(req: NextRequest) {
   try {
     const rawToken = req.cookies.get(REFRESH_COOKIE)?.value;

@@ -3,6 +3,8 @@ import { requireAuth } from '@/server/auth/context';
 import { prisma } from '@/server/db/client';
 import { AppError } from '@/server/lib/errors';
 
+export const dynamic = 'force-dynamic';
+
 // GET /api/v1/briefings/{id}/stream
 //
 // Server-Sent Events — streams search progress to the browser.
@@ -162,9 +164,3 @@ export async function GET(
   });
 }
 
-function extractCity(criteria: unknown): string {
-  if (criteria && typeof criteria === 'object' && 'city' in criteria) {
-    return String((criteria as Record<string, unknown>).city ?? '');
-  }
-  return '';
-}

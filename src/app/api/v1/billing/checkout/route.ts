@@ -7,6 +7,8 @@ import { prisma } from '@/server/db/client';
 import { AppError } from '@/server/lib/errors';
 import { apiSuccess, apiError } from '@/server/lib/response';
 
+export const dynamic = 'force-dynamic';
+
 const bodySchema = z.object({
   plan: z.enum(['starter', 'pro']),
 });

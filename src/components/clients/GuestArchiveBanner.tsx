@@ -38,9 +38,6 @@ export function GuestArchiveBanner({
 
   async function saveAsClient() {
     setSaving(true);
-    const token = sessionStorage.getItem('access_token');
-
-    // Navigate to client edit page with the guest ID to convert it
     router.push(`/clients/${clientId}/convert`);
     setSaving(false);
   }

@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { Plus, Clock, CheckCircle, AlertCircle, Loader } from 'lucide-react';
+import { Plus, CheckCircle, AlertCircle, Loader } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { EmptyBriefingsState } from '@/components/briefings/BriefingForm';

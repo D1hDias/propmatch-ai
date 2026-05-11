@@ -5,6 +5,8 @@ import { apiSuccess, apiError } from '@/server/lib/response';
 import { AppError } from '@/server/lib/errors';
 import { updateClientSchema } from '@/lib/schemas/client';
 
+export const dynamic = 'force-dynamic';
+
 // GET    /api/v1/clients/{id} — client detail with scan history
 // PATCH  /api/v1/clients/{id} — update profile / crm status / urgency
 // DELETE /api/v1/clients/{id} — soft-archive

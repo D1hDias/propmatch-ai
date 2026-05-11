@@ -6,6 +6,8 @@ import { apiSuccess, apiError } from '@/server/lib/response';
 import { AppError } from '@/server/lib/errors';
 import { searchQueue } from '@/server/search/queue';
 
+export const dynamic = 'force-dynamic';
+
 // POST /api/v1/briefings/{id}/widen
 //
 // Re-runs the search with a widened set of criteria chosen by the broker.

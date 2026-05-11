@@ -31,38 +31,6 @@ interface Analytics {
   recentActivity: RecentBriefing[];
 }
 
-function Sparkline({ data }: { data: WeekPoint[] }) {
-  if (!data.length) return null;
-  const max = Math.max(...data.map((d) => d.briefings), 1);
-  const w = 120;
-  const h = 36;
-  const pts = data.map((d, i) => {
-    const x = (i / (data.length - 1)) * w;
-    const y = h - (d.briefings / max) * h;
-    return `${x},${y}`;
-  });
-
-  return (
-    <svg width={w} height={h} className="overflow-visible">
-      <polyline
-        points={pts.join(' ')}
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        className="text-primary"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      {data.map((d, i) => {
-        const x = (i / (data.length - 1)) * w;
-        const y = h - (d.briefings / max) * h;
-        return (
-          <circle key={i} cx={x} cy={y} r="2.5" className="fill-primary" />
-        );
-      })}
-    </svg>
-  );
-}
 
 const statusConfig = {
   done: { label: 'Concluído', icon: CheckCircle, cls: 'text-[#4FD66E]' },

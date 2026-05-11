@@ -3,6 +3,8 @@ import { requireAuth } from '@/server/auth/context';
 import { requestDeletion } from '@/server/lgpd/service';
 import { apiSuccess, apiError } from '@/server/lib/response';
 
+export const dynamic = 'force-dynamic';
+
 // POST /api/v1/lgpd/delete
 // Authenticated. Creates a deletion job with a 7-day cancellation window.
 export async function POST(req: NextRequest) {

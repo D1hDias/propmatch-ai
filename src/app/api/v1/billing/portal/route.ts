@@ -6,6 +6,8 @@ import { prisma } from '@/server/db/client';
 import { AppError } from '@/server/lib/errors';
 import { apiSuccess, apiError } from '@/server/lib/response';
 
+export const dynamic = 'force-dynamic';
+
 // POST /api/v1/billing/portal
 // Returns a Stripe Customer Portal session URL for the current user.
 export async function POST(req: NextRequest) {

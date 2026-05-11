@@ -32,8 +32,8 @@ function log(level: LogLevel, message: string, context?: Record<string, unknown>
   const entry: LogEntry = { level, message, ...context };
 
   if (process.env.NODE_ENV !== 'test') {
-    const consoleMethod = level === 'error' ? 'error' : level === 'warn' ? 'warn' : 'info';
-    console[consoleMethod](JSON.stringify(entry));
+    if (level === 'error') console.error(JSON.stringify(entry));
+    else console.warn(JSON.stringify(entry));
     void sendToBetterStack(entry);
   }
 }

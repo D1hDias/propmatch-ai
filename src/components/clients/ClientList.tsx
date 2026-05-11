@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { Archive, ArchiveRestore, FileText, Phone, User } from 'lucide-react';
 import {
@@ -29,11 +29,7 @@ export function ClientList() {
   const [showArchived, setShowArchived] = useState(false);
   const [actionId, setActionId] = useState<string | null>(null);
 
-  useEffect(() => {
-    loadClients();
-  }, [showArchived]);
-
-  async function loadClients() {
+  const loadClients = useCallback(async () => {
     setLoading(true);
     const token = sessionStorage.getItem('access_token');
     const res = await fetch(`/api/v1/clients${showArchived ? '?archived=true' : ''}`, {
@@ -42,7 +38,11 @@ export function ClientList() {
     const data = (await res.json()) as { clients?: Client[] };
     setClients(data.clients ?? []);
     setLoading(false);
-  }
+  }, [showArchived]);
+
+  useEffect(() => {
+    void loadClients();
+  }, [loadClients]);
 
   async function archive(id: string) {
     setActionId(id);

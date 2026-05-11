@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import {
@@ -178,11 +178,7 @@ export default function ClientDetailPage() {
   const [archiving, setArchiving] = useState(false);
   const [error, setError] = useState('');
 
-  useEffect(() => {
-    load();
-  }, [id]);
-
-  async function load() {
+  const load = useCallback(async () => {
     setLoading(true);
     setError('');
     const token = sessionStorage.getItem('access_token');
@@ -194,7 +190,11 @@ export default function ClientDetailPage() {
     setClient(data.client ?? null);
     setScanHistory(data.scanHistory ?? []);
     setLoading(false);
-  }
+  }, [id]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
 
   async function toggleArchive() {
     if (!client) return;

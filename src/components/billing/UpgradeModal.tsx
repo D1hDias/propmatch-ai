@@ -55,7 +55,7 @@ export function UpgradeModal({ requiredPlan, featureName, onClose }: UpgradeModa
           </div>
           <h2 className="text-xl font-bold text-white">Faça upgrade para {plan.label}</h2>
           <p className="mt-1 text-sm text-white/80">
-            "{featureName}" está disponível no plano {plan.label} ou superior.
+            {featureName} está disponível no plano {plan.label} ou superior.
           </p>
         </div>
 

@@ -3,6 +3,8 @@ import { requireAuth } from '@/server/auth/context';
 import { prisma } from '@/server/db/client';
 import { apiSuccess, apiError } from '@/server/lib/response';
 
+export const dynamic = 'force-dynamic';
+
 // GET /api/v1/analytics/summary
 // KPIs + weekly history (12w) + top neighborhoods + CRM distribution
 
@@ -17,7 +19,6 @@ export async function GET(req: NextRequest) {
     weekStart.setHours(0, 0, 0, 0);
 
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-    const prevMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
     const twelveWeeksAgo = new Date(now.getTime() - 12 * 7 * 24 * 60 * 60 * 1000);
 
     // ── KPIs ──────────────────────────────────────────────────────────────

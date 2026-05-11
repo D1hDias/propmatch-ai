@@ -4,6 +4,8 @@ import { getBriefing } from '@/server/briefings/service';
 import { AppError } from '@/server/lib/errors';
 import { apiSuccess, apiError } from '@/server/lib/response';
 
+export const dynamic = 'force-dynamic';
+
 // GET /api/v1/briefings/:id
 export async function GET(
   req: NextRequest,

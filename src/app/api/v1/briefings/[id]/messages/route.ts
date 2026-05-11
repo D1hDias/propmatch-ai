@@ -9,6 +9,8 @@ import { formatWhatsAppMessage, formatPartnerMessage } from '@/server/messaging/
 import { createShortLink } from '@/server/messaging/shortener';
 import { requirePlan } from '@/server/auth/gates';
 
+export const dynamic = 'force-dynamic';
+
 const propertyForMessageSchema = z.object({
   propertyId: z.string().uuid(),
   personalNote: z.string().max(500).nullable().optional(),
@@ -136,10 +138,6 @@ export async function POST(
       // (broker will send individually to each partner). Use first property.
       const firstProp = propertiesForMessage[0];
       if (!firstProp) throw new AppError('VALIDATION_FAILED', 'No property', 'Nenhum imóvel.', 400);
-
-      const rawText = typeof briefing.extractedCriteria === 'object' && briefing.extractedCriteria !== null
-        ? JSON.stringify(briefing.extractedCriteria)
-        : String(briefing.extractedCriteria ?? '');
 
       // Build a concise client profile summary from extracted criteria
       const criteria = briefing.extractedCriteria as Record<string, unknown> | null;

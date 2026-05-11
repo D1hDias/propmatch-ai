@@ -5,6 +5,8 @@ import { requestExport } from '@/server/lgpd/export-service';
 import { exportQueue } from '@/server/lgpd/export-queue';
 import { apiSuccess, apiError } from '@/server/lib/response';
 
+export const dynamic = 'force-dynamic';
+
 // POST /api/v1/lgpd/export
 export async function POST(req: NextRequest) {
   try {

@@ -6,6 +6,8 @@ import { getStripe } from '@/server/billing/stripe';
 import { prisma } from '@/server/db/client';
 import { logger } from '@/server/lib/logger';
 
+export const dynamic = 'force-dynamic';
+
 // POST /api/v1/billing/webhook
 // Stripe sends events here. Verify signature, update users.plan accordingly.
 // IMPORTANT: Must not use requireAuth — Stripe calls this without a user JWT.

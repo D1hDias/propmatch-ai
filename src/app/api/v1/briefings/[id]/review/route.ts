@@ -5,6 +5,8 @@ import { prisma } from '@/server/db/client';
 import { apiSuccess, apiError } from '@/server/lib/response';
 import { AppError } from '@/server/lib/errors';
 
+export const dynamic = 'force-dynamic';
+
 // PATCH /api/v1/briefings/{id}/review
 //
 // Admin-only endpoint: resolve a HITL review.

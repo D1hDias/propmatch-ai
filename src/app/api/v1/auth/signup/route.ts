@@ -4,6 +4,8 @@ import { signup } from '@/server/auth/service';
 import { AppError } from '@/server/lib/errors';
 import { apiSuccess, apiError, setRefreshCookie } from '@/server/lib/response';
 
+export const dynamic = 'force-dynamic';
+
 export async function POST(req: NextRequest) {
   try {
     const body: unknown = await req.json();

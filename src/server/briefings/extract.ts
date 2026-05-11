@@ -66,10 +66,6 @@ function scoreConfidence(criteria: ExtractedCriteria): number {
   return Math.min(1, Math.round(score * 1000) / 1000);
 }
 
-function hasCriticalFields(criteria: ExtractedCriteria): boolean {
-  return CRITICAL_FIELDS.every((f) => criteria[f] !== undefined && criteria[f] !== null);
-}
-
 // ---------------------------------------------------------------------------
 // Prompt
 // ---------------------------------------------------------------------------

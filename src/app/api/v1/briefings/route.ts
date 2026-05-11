@@ -5,6 +5,8 @@ import { createBriefing, listBriefings } from '@/server/briefings/service';
 import { AppError } from '@/server/lib/errors';
 import { apiSuccess, apiError } from '@/server/lib/response';
 
+export const dynamic = 'force-dynamic';
+
 // POST /api/v1/briefings
 export async function POST(req: NextRequest) {
   try {

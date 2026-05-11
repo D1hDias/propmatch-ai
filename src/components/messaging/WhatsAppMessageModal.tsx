@@ -7,11 +7,6 @@ import type { PropertyCardData } from '@/components/search/PropertyCard';
 
 type MessageTarget = 'client' | 'partner';
 
-interface PropertyNote {
-  propertyId: string;
-  note: string;
-}
-
 interface WhatsAppMessageModalProps {
   briefingId: string;
   selectedIds: string[];
@@ -26,7 +21,7 @@ export function WhatsAppMessageModal({
   selectedIds,
   listings,
   clientName,
-  clientProfile,
+  clientProfile: _clientProfile,
   onClose,
 }: WhatsAppMessageModalProps) {
   const selectedListings = selectedIds

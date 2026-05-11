@@ -3,6 +3,8 @@ import { runRetentionJob } from '@/server/jobs/retention';
 import { apiSuccess, apiError } from '@/server/lib/response';
 import { AppError } from '@/server/lib/errors';
 
+export const dynamic = 'force-dynamic';
+
 // POST /api/v1/internal/cron/retention
 //
 // Called by the systemd timer (or Vercel cron) daily at 03:00 UTC.

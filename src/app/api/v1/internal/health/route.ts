@@ -1,6 +1,8 @@
 import { prisma } from '@/server/db/client';
-import { apiSuccess, apiError } from '@/server/lib/response';
+import { apiSuccess } from '@/server/lib/response';
 import { AppError } from '@/server/lib/errors';
+
+export const dynamic = 'force-dynamic';
 
 // GET /api/v1/internal/health
 //

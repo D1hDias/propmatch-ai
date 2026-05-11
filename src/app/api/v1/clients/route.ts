@@ -4,6 +4,8 @@ import { prisma } from '@/server/db/client';
 import { apiSuccess, apiError } from '@/server/lib/response';
 import { createClientSchema } from '@/lib/schemas/client';
 
+export const dynamic = 'force-dynamic';
+
 // GET  /api/v1/clients  — list clients for the authenticated broker
 // POST /api/v1/clients  — create a saved (non-guest) client
 

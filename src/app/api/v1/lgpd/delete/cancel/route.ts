@@ -5,6 +5,8 @@ import { cancelDeletion } from '@/server/lgpd/service';
 import { AppError } from '@/server/lib/errors';
 import { apiSuccess, apiError } from '@/server/lib/response';
 
+export const dynamic = 'force-dynamic';
+
 const cancelSchema = z.object({
   cancellation_token: z.string().min(1),
 });
