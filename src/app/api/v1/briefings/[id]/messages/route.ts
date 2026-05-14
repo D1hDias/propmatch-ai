@@ -8,6 +8,7 @@ import { apiSuccess, apiError } from '@/server/lib/response';
 import { formatWhatsAppMessage, formatPartnerMessage } from '@/server/messaging/format';
 import { createShortLink } from '@/server/messaging/shortener';
 import { requirePlan } from '@/server/auth/gates';
+import { logger } from '@/server/lib/logger';
 
 export const dynamic = 'force-dynamic';
 
@@ -194,11 +195,11 @@ export async function POST(
       },
     });
 
-    // Back-fill messageId on short links (non-blocking)
-    void prisma.shortLink.updateMany({
+    // Back-fill messageId on short links — non-critical side effect, log on failure
+    prisma.shortLink.updateMany({
       where: { targetUrl: { in: propertiesForMessage.map((p) => p.url) }, messageId: null },
       data: { messageId: message.id },
-    });
+    }).catch((err: unknown) => logger.warn('shortLink messageId backfill failed', { messageId: message.id, error: String(err) }));
 
     return apiSuccess(message, 201);
   } catch (err) {
