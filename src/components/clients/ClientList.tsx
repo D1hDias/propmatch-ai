@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { Archive, ArchiveRestore, FileText, Phone, User } from 'lucide-react';
+import { apiFetch } from '@/lib/api-fetch';
 import {
   CLIENT_CRM_STATUS_LABELS,
   CLIENT_CRM_STATUS_COLORS,
@@ -31,9 +32,7 @@ export function ClientList() {
 
   const loadClients = useCallback(async () => {
     setLoading(true);
-    const token = sessionStorage.getItem('access_token');
-    const res = await fetch(`/api/v1/clients${showArchived ? '?archived=true' : ''}`, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
+        const res = await apiFetch(`/api/v1/clients${showArchived ? '?archived=true' : ''}`, {
     });
     const data = (await res.json()) as { clients?: Client[] };
     setClients(data.clients ?? []);
@@ -46,10 +45,8 @@ export function ClientList() {
 
   async function archive(id: string) {
     setActionId(id);
-    const token = sessionStorage.getItem('access_token');
-    await fetch(`/api/v1/clients/${id}`, {
+        await apiFetch(`/api/v1/clients/${id}`, {
       method: 'DELETE',
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
     });
     await loadClients();
     setActionId(null);
@@ -57,12 +54,10 @@ export function ClientList() {
 
   async function restore(id: string) {
     setActionId(id);
-    const token = sessionStorage.getItem('access_token');
-    await fetch(`/api/v1/clients/${id}`, {
+        await apiFetch(`/api/v1/clients/${id}`, {
       method: 'PATCH',
       headers: {
         'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
       body: JSON.stringify({ archiveStatus: 'active' }),
     });

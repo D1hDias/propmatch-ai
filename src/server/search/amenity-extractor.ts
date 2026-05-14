@@ -1,5 +1,6 @@
 import 'server-only';
 import { callAnthropic } from '@/server/lib/anthropic';
+import { MODELS } from '@/server/lib/models';
 import { logger } from '@/server/lib/logger';
 
 /**
@@ -66,7 +67,7 @@ export async function extractAmenities(
 
   try {
     const response = await callAnthropic({
-      model: 'claude-haiku-4-5-20251001', // cheapest — used for bulk ingestion
+      model: MODELS.amenityExtraction,
       system: SYSTEM_PROMPT,
       messages: [{ role: 'user', content: buildPrompt(description) }],
       max_tokens: 512,

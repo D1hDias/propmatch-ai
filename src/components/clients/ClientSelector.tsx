@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { Target, User, UserPlus } from 'lucide-react';
+import { apiFetch } from '@/lib/api-fetch';
 
 interface Client {
   id: string;
@@ -30,10 +31,7 @@ export function ClientSelector({ value, onChange, disabled }: ClientSelectorProp
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const token = typeof window !== 'undefined' ? sessionStorage.getItem('access_token') : null;
-    fetch('/api/v1/clients', {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    })
+    apiFetch('/api/v1/clients')
       .then((r) => r.json())
       .then((data: { clients?: Client[] }) => setClients(data.clients ?? []))
       .catch(() => setClients([]))
@@ -69,8 +67,6 @@ export function ClientSelector({ value, onChange, disabled }: ClientSelectorProp
 
         <Link
           href="/clients/new"
-          target="_blank"
-          rel="noopener noreferrer"
           className="flex items-center gap-1.5 h-10 px-3 rounded-md border border-input bg-background text-sm text-muted-foreground hover:text-foreground hover:bg-muted transition-colors shrink-0"
           title="Cadastrar novo cliente"
         >

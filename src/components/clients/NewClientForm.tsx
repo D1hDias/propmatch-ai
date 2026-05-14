@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Loader } from 'lucide-react';
+import { apiFetch } from '@/lib/api-fetch';
 
 export function NewClientForm() {
   const router = useRouter();
@@ -19,14 +20,12 @@ export function NewClientForm() {
     setError('');
     setSubmitting(true);
 
-    const token = sessionStorage.getItem('access_token');
-
+    
     try {
-      const res = await fetch('/api/v1/clients', {
+      const res = await apiFetch('/api/v1/clients', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
         body: JSON.stringify({
           name: name.trim(),

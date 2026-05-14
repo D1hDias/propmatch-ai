@@ -18,6 +18,7 @@ import {
   Target,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { apiFetch } from '@/lib/api-fetch';
 import {
   CLIENT_CRM_STATUS_LABELS,
   CLIENT_CRM_STATUS_COLORS,
@@ -181,9 +182,7 @@ export default function ClientDetailPage() {
   const load = useCallback(async () => {
     setLoading(true);
     setError('');
-    const token = sessionStorage.getItem('access_token');
-    const res = await fetch(`/api/v1/clients/${id}`, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
+        const res = await apiFetch(`/api/v1/clients/${id}`, {
     });
     if (!res.ok) { setError('Cliente não encontrado.'); setLoading(false); return; }
     const data = (await res.json()) as { client?: ClientDetail; scanHistory?: ScanEntry[] };
@@ -199,16 +198,14 @@ export default function ClientDetailPage() {
   async function toggleArchive() {
     if (!client) return;
     setArchiving(true);
-    const token = sessionStorage.getItem('access_token');
-    if (client.archiveStatus === 'active') {
-      await fetch(`/api/v1/clients/${id}`, {
+        if (client.archiveStatus === 'active') {
+      await apiFetch(`/api/v1/clients/${id}`, {
         method: 'DELETE',
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
     } else {
-      await fetch(`/api/v1/clients/${id}`, {
+      await apiFetch(`/api/v1/clients/${id}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ archiveStatus: 'active' }),
       });
     }

@@ -2,17 +2,25 @@ import 'server-only';
 import type { NormalizedListing, SearchCriteria } from './types';
 
 /**
- * SRC-10: Fit score — 0 to 100.
+ * Fit score — 0 to 100 (with up to +15 description-match bonus, capped at 100).
  *
- * Weights are calibrated so:
- *   - A perfect match on all hard criteria scores 100
- *   - Missing a critical field (city, bedrooms, price) causes a steep penalty
- *   - Soft criteria (amenities, furnished) add bonus points up to their cap
+ * Scoring is dynamic: only criteria that were explicitly provided contribute
+ * to the maximum possible score. A criterion not informed by the broker is
+ * simply excluded from the calculation — it never inflates the score.
  *
- * Tiebreaker order (applied at sort time, not here):
- *   1. ZAP source first
- *   2. More recent scrapedAt
- *   3. Lower price
+ * Active criteria and their base weights:
+ *   city         20  — always active (required field)
+ *   neighborhood 25  — active when neighborhood/neighborhoods specified
+ *   bedrooms     20  — active when bedroomsMin specified; above bedroomsMax = hard fail
+ *   price        15  — active ONLY when priceMin or priceMax specified
+ *   area          8  — active when areaMin specified
+ *   parking       2  — active when parkingMin specified
+ *   furnished     2  — active when furnished specified
+ *   propertyType  6  — active when propertyType specified
+ *   amenities     8  — active when amenities list specified
+ *
+ * Final base score = (earned / possible) * 100
+ * Description bonus (up to +15) applied on top, capped at 100.
  */
 
 interface ScoredListing {
@@ -21,137 +29,246 @@ interface ScoredListing {
   scoreBreakdown: Record<string, number>;
 }
 
-const WEIGHTS = {
-  city: 20,         // hard — wrong city = reject
-  neighborhood: 15, // important but not always available
-  bedrooms: 20,     // hard
-  price: 20,        // hard
-  area: 10,
-  parking: 5,
-  furnished: 5,
-  amenities: 5,     // structured amenities from source
+// ---------------------------------------------------------------------------
+// Weights — used proportionally; sum is irrelevant since we normalize.
+// ---------------------------------------------------------------------------
+
+const W = {
+  city: 20,
+  neighborhood: 25,
+  bedrooms: 20,
+  price: 15,
+  area: 8,
+  parking: 2,
+  furnished: 2,
+  propertyType: 6,
+  amenities: 8,
 };
 
-export function fitScore(listing: NormalizedListing, criteria: SearchCriteria): ScoredListing {
-  const breakdown: Record<string, number> = {};
-  let total = 0;
+const DESCRIPTION_BONUS_MAX = 15;
 
-  // City (hard) — wrong city = 0 points but no outright rejection
-  // (let the caller filter by city before scoring)
-  const cityMatch =
-    listing.city.toLowerCase().includes(criteria.city.toLowerCase()) ||
-    criteria.city.toLowerCase().includes(listing.city.toLowerCase());
-  breakdown.city = cityMatch ? WEIGHTS.city : 0;
-  total += breakdown.city;
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
-  // Neighborhood (soft — portals don't always return it)
-  if (criteria.neighborhood && listing.neighborhood) {
-    const needle = criteria.neighborhood.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
-    const haystack = listing.neighborhood.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
-    breakdown.neighborhood = haystack.includes(needle) || needle.includes(haystack)
-      ? WEIGHTS.neighborhood
-      : 0;
-  } else {
-    // If criteria has no neighborhood, or listing has no neighborhood, don't penalize
-    breakdown.neighborhood = WEIGHTS.neighborhood;
-  }
-  total += breakdown.neighborhood;
+function norm(text: string): string {
+  return text
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '');
+}
 
-  // Bedrooms
-  if (criteria.bedroomsMin != null && listing.bedrooms != null) {
-    if (listing.bedrooms < criteria.bedroomsMin) {
-      breakdown.bedrooms = 0;
-    } else if (criteria.bedroomsMax != null && listing.bedrooms > criteria.bedroomsMax) {
-      breakdown.bedrooms = Math.round(WEIGHTS.bedrooms * 0.5); // partial — over the max
-    } else {
-      breakdown.bedrooms = WEIGHTS.bedrooms;
-    }
-  } else {
-    breakdown.bedrooms = WEIGHTS.bedrooms; // no constraint = no penalty
-  }
-  total += breakdown.bedrooms;
+function textContains(haystack: string, needle: string): boolean {
+  if (!haystack || !needle) return false;
+  return norm(haystack).includes(norm(needle));
+}
 
-  // Price
-  if (criteria.priceMax != null && listing.price > 0) {
-    if (listing.price > criteria.priceMax) {
-      // Over budget — penalize proportionally
-      const overBy = (listing.price - criteria.priceMax) / criteria.priceMax;
-      breakdown.price = overBy > 0.2 ? 0 : Math.round(WEIGHTS.price * (1 - overBy / 0.2));
-    } else if (criteria.priceMin != null && listing.price < criteria.priceMin) {
-      breakdown.price = Math.round(WEIGHTS.price * 0.7); // under min — likely different product
-    } else {
-      breakdown.price = WEIGHTS.price;
-    }
-  } else {
-    breakdown.price = WEIGHTS.price;
-  }
-  total += breakdown.price;
+function neighborhoodMatches(listing: NormalizedListing, criteria: SearchCriteria): boolean {
+  if (!listing.neighborhood) return false;
 
-  // Area
-  if (criteria.areaMin != null && listing.areaSqm != null) {
-    breakdown.area =
-      listing.areaSqm >= criteria.areaMin
-        ? WEIGHTS.area
-        : Math.round(WEIGHTS.area * (listing.areaSqm / criteria.areaMin));
-  } else {
-    breakdown.area = WEIGHTS.area;
-  }
-  total += breakdown.area;
+  const haystack = norm(listing.neighborhood);
+  const candidates = [
+    ...(criteria.neighborhoods ?? []),
+    ...(criteria.neighborhood ? [criteria.neighborhood] : []),
+  ];
 
-  // Parking
-  if (criteria.parkingMin != null && listing.parkingSpots != null) {
-    breakdown.parking =
-      listing.parkingSpots >= criteria.parkingMin ? WEIGHTS.parking : 0;
-  } else {
-    breakdown.parking = WEIGHTS.parking;
-  }
-  total += breakdown.parking;
-
-  // Furnished
-  if (criteria.furnished != null && listing.furnished != null) {
-    breakdown.furnished = criteria.furnished === listing.furnished ? WEIGHTS.furnished : 0;
-  } else {
-    breakdown.furnished = WEIGHTS.furnished;
-  }
-  total += breakdown.furnished;
-
-  // Amenities — check extractedAmenities (from description) and raw amenities list
-  if (criteria.amenities && criteria.amenities.length > 0) {
-    const matched = criteria.amenities.filter((wanted) => {
-      const wantedLower = wanted.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
-      // Check raw amenities list
-      const inRaw = listing.amenities.some((a) =>
-        a.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').includes(wantedLower),
-      );
-      // Check extracted amenities (camelCase keys)
-      const inExtracted = Object.entries(listing.extractedAmenities).some(
-        ([k, v]) => v && k.toLowerCase().includes(wantedLower.replace(/\s/g, '')),
-      );
-      return inRaw || inExtracted;
-    });
-    breakdown.amenities = Math.round(
-      WEIGHTS.amenities * (matched.length / criteria.amenities.length),
-    );
-  } else {
-    breakdown.amenities = WEIGHTS.amenities;
-  }
-  total += breakdown.amenities;
-
-  // Pet-friendly bonus (uses extractedAmenities)
-  if (criteria.petFriendly === true) {
-    if (!listing.extractedAmenities.petFriendly) {
-      total = Math.max(0, total - 10); // strong penalty for must-have not met
-    }
-  }
-
-  return { listing, score: Math.min(100, Math.max(0, total)), scoreBreakdown: breakdown };
+  return candidates.some((n) => {
+    const needle = norm(n);
+    return haystack.includes(needle) || needle.includes(haystack);
+  });
 }
 
 /**
- * Score and sort a list of listings, applying tiebreaker order:
- * 1. ZAP source first
- * 2. Most recent (scrapedAt)
- * 3. Lowest price
+ * Groups property type strings into equivalence classes so that
+ * "Apartamento", "apartment", "flat", "cobertura" all match each other,
+ * while "casa", "house", "sobrado" form a separate group.
+ */
+function propertyTypeMatches(listingType: string, criteriaType: string): boolean {
+  const n = (t: string) =>
+    t.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/\s+/g, '');
+
+  const lt = n(listingType);
+  const ct = n(criteriaType);
+
+  if (lt === ct || lt.includes(ct) || ct.includes(lt)) return true;
+
+  const GROUPS: string[][] = [
+    ['apartment', 'apartamento', 'flat', 'studio', 'kitnet', 'kitinete', 'cobertura', 'penthouse', 'loft', 'studios'],
+    ['house', 'casa', 'sobrado', 'bangalo', 'chacara', 'sitio', 'fazenda', 'vila', 'condominio'],
+    ['commercial', 'comercial', 'loja', 'sala', 'escritorio', 'galpao', 'deposito', 'warehouse'],
+    ['land', 'terreno', 'lote'],
+  ];
+
+  for (const group of GROUPS) {
+    const ctInGroup = group.some((a) => ct.includes(a) || a.includes(ct));
+    const ltInGroup = group.some((a) => lt.includes(a) || a.includes(lt));
+    if (ctInGroup) return ltInGroup; // if criteria is in a group, listing must be too
+  }
+
+  return true; // unknown type — don't penalize
+}
+
+// ---------------------------------------------------------------------------
+// Core scoring
+// ---------------------------------------------------------------------------
+
+export function fitScore(listing: NormalizedListing, criteria: SearchCriteria): ScoredListing {
+  const breakdown: Record<string, number> = {};
+  let earned = 0;
+  let possible = 0;
+
+  // 1. City — always active; wrong city = 0 for everything
+  possible += W.city;
+  const cityOk =
+    textContains(listing.city, criteria.city) ||
+    textContains(criteria.city, listing.city);
+  breakdown.city = cityOk ? W.city : 0;
+  earned += breakdown.city;
+
+  // 2. Neighborhood — active only when specified
+  const hasNeighborhoodCriteria =
+    (criteria.neighborhoods?.length ?? 0) > 0 || !!criteria.neighborhood;
+
+  if (hasNeighborhoodCriteria) {
+    possible += W.neighborhood;
+    if (!listing.neighborhood) {
+      breakdown.neighborhood = Math.round(W.neighborhood * 0.5); // missing data — partial
+    } else if (neighborhoodMatches(listing, criteria)) {
+      breakdown.neighborhood = W.neighborhood;
+    } else {
+      breakdown.neighborhood = 0;
+    }
+    earned += breakdown.neighborhood;
+  }
+
+  // 3. Bedrooms — active when bedroomsMin specified
+  //    Above bedroomsMax is now a hard fail (0), same as below bedroomsMin.
+  if (criteria.bedroomsMin != null && listing.bedrooms != null) {
+    possible += W.bedrooms;
+    if (listing.bedrooms < criteria.bedroomsMin) {
+      breakdown.bedrooms = 0; // hard fail — below minimum
+    } else if (criteria.bedroomsMax != null && listing.bedrooms > criteria.bedroomsMax) {
+      breakdown.bedrooms = 0; // hard fail — above maximum
+    } else {
+      breakdown.bedrooms = W.bedrooms;
+    }
+    earned += breakdown.bedrooms;
+  }
+
+  // 4. Price — active ONLY when priceMax or priceMin was explicitly provided.
+  //    No price in the briefing means the broker does not want it to affect scoring.
+  if ((criteria.priceMax != null || criteria.priceMin != null) && listing.price > 0) {
+    possible += W.price;
+    if (criteria.priceMax != null && listing.price > criteria.priceMax) {
+      const overBy = (listing.price - criteria.priceMax) / criteria.priceMax;
+      breakdown.price = overBy > 0.2 ? 0 : Math.round(W.price * (1 - overBy / 0.2));
+    } else if (criteria.priceMin != null && listing.price < criteria.priceMin) {
+      breakdown.price = Math.round(W.price * 0.7); // under min — likely different product tier
+    } else {
+      breakdown.price = W.price;
+    }
+    earned += breakdown.price;
+  }
+
+  // 5. Area — active when areaMin specified
+  if (criteria.areaMin != null && listing.areaSqm != null) {
+    possible += W.area;
+    breakdown.area =
+      listing.areaSqm >= criteria.areaMin
+        ? W.area
+        : Math.round(W.area * (listing.areaSqm / criteria.areaMin));
+    earned += breakdown.area;
+  }
+
+  // 6. Parking — active when parkingMin specified
+  if (criteria.parkingMin != null && listing.parkingSpots != null) {
+    possible += W.parking;
+    breakdown.parking = listing.parkingSpots >= criteria.parkingMin ? W.parking : 0;
+    earned += breakdown.parking;
+  }
+
+  // 7. Furnished — active when specified
+  if (criteria.furnished != null && listing.furnished != null) {
+    possible += W.furnished;
+    breakdown.furnished = criteria.furnished === listing.furnished ? W.furnished : 0;
+    earned += breakdown.furnished;
+  }
+
+  // 8. Property type — active when specified
+  if (criteria.propertyType && listing.propertyType) {
+    possible += W.propertyType;
+    breakdown.propertyType = propertyTypeMatches(listing.propertyType, criteria.propertyType)
+      ? W.propertyType
+      : 0;
+    earned += breakdown.propertyType;
+  }
+
+  // 9. Structured amenities — active when list specified
+  if (criteria.amenities && criteria.amenities.length > 0) {
+    possible += W.amenities;
+    const matched = criteria.amenities.filter((wanted) => {
+      const wantedNorm = norm(wanted);
+      const inRaw = listing.amenities.some((a) => norm(a).includes(wantedNorm));
+      const inExtracted = Object.entries(listing.extractedAmenities).some(
+        ([k, v]) => v && norm(k).includes(wantedNorm.replace(/\s+/g, '')),
+      );
+      return inRaw || inExtracted;
+    });
+    breakdown.amenities = Math.round(W.amenities * (matched.length / criteria.amenities.length));
+    earned += breakdown.amenities;
+  }
+
+  // Pet-friendly hard requirement — subtract 10 pts if required but not present
+  if (criteria.petFriendly === true && !listing.extractedAmenities.petFriendly) {
+    earned = Math.max(0, earned - 10);
+    breakdown.petFriendlyPenalty = -10;
+  }
+
+  // Normalize to 0–100 based on active criteria only
+  const baseScore = possible > 0 ? Math.round((earned / possible) * 100) : 0;
+
+  // ---------------------------------------------------------------------------
+  // 10. Description match bonus (up to +15)
+  //
+  // Searches title + description for amenity/note terms from the briefing.
+  // Applied on top of the normalized base score, capped at 100.
+  // ---------------------------------------------------------------------------
+
+  const descriptionSearchTerms: string[] = [
+    ...(criteria.amenities ?? []),
+    ...(criteria.notes
+      ? criteria.notes.split(/[\s,;.]+/).filter((t) => t.length > 4)
+      : []),
+  ].filter(Boolean);
+
+  let descBonus = 0;
+  if (descriptionSearchTerms.length > 0) {
+    const searchText = `${listing.title} ${listing.description}`;
+    const descMatched = descriptionSearchTerms.filter((term) =>
+      textContains(searchText, term),
+    );
+    descBonus = Math.round(
+      DESCRIPTION_BONUS_MAX * (descMatched.length / descriptionSearchTerms.length),
+    );
+  }
+  breakdown.descriptionBonus = descBonus;
+
+  return {
+    listing,
+    score: Math.min(100, Math.max(0, baseScore + descBonus)),
+    scoreBreakdown: breakdown,
+  };
+}
+
+/**
+ * Score, sort and return all listings.
+ *
+ * Sort order:
+ *   1. Score descending
+ *   2. Neighborhood match first (tiebreaker for equal scores)
+ *   3. ZAP source first
+ *   4. Most recent scrapedAt
+ *   5. Lowest price
  */
 export function scoreAndSort(
   listings: NormalizedListing[],
@@ -160,20 +277,23 @@ export function scoreAndSort(
   const scored = listings.map((l) => fitScore(l, criteria));
 
   scored.sort((a, b) => {
-    // Primary: score descending
     if (b.score !== a.score) return b.score - a.score;
 
-    // Tiebreaker 1: ZAP first
-    const aIsZap = a.listing.source === 'zap' ? 0 : 1;
-    const bIsZap = b.listing.source === 'zap' ? 0 : 1;
-    if (aIsZap !== bIsZap) return aIsZap - bIsZap;
+    // Tiebreaker: neighborhood match first
+    const aNbMatch = neighborhoodMatches(a.listing, criteria) ? 0 : 1;
+    const bNbMatch = neighborhoodMatches(b.listing, criteria) ? 0 : 1;
+    if (aNbMatch !== bNbMatch) return aNbMatch - bNbMatch;
 
-    // Tiebreaker 2: most recent
+    // Tiebreaker: ZAP first
+    const aZap = a.listing.source === 'zap' ? 0 : 1;
+    const bZap = b.listing.source === 'zap' ? 0 : 1;
+    if (aZap !== bZap) return aZap - bZap;
+
+    // Tiebreaker: most recent
     const aDate = new Date(a.listing.scrapedAt).getTime();
     const bDate = new Date(b.listing.scrapedAt).getTime();
     if (aDate !== bDate) return bDate - aDate;
 
-    // Tiebreaker 3: lowest price
     return a.listing.price - b.listing.price;
   });
 

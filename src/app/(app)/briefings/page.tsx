@@ -6,6 +6,7 @@ import { Plus, CheckCircle, AlertCircle, Loader } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { EmptyBriefingsState } from '@/components/briefings/BriefingForm';
+import { apiFetch } from '@/lib/api-fetch';
 
 const STATUS_CONFIG = {
   ready: { label: 'Pronto', icon: CheckCircle, className: 'text-success' },
@@ -29,10 +30,7 @@ export default function BriefingsPage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const token = sessionStorage.getItem('access_token');
-    fetch('/api/v1/briefings?per_page=50', {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    })
+    apiFetch('/api/v1/briefings?per_page=50')
       .then((r) => r.json())
       .then((d: { items?: Briefing[]; total?: number; error?: unknown }) => {
         if (!d.error) {

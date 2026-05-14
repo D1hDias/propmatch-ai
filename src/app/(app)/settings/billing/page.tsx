@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { Zap, CreditCard, ArrowUpRight, CheckCircle, AlertCircle, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { apiFetch } from '@/lib/api-fetch';
 
 interface PlanInfo {
   id: 'free' | 'starter' | 'pro';
@@ -42,27 +43,19 @@ export default function BillingPage() {
   const [loading, setLoading] = useState<string | null>(null);
   const [portalLoading, setPortalLoading] = useState(false);
 
-  function getToken() {
-    return typeof window !== 'undefined' ? sessionStorage.getItem('access_token') : null;
-  }
-
   useEffect(() => {
     // Read plan from token — in production decode JWT payload
     // For MVP, read from a /api/v1/auth/me endpoint or session storage
-    const raw = typeof window !== 'undefined' ? sessionStorage.getItem('user_plan') : null;
+    const raw = typeof window !== 'undefined' ? localStorage.getItem('user_plan') : null;
     setCurrentPlan(raw ?? 'free');
   }, [upgradedPlan]);
 
   async function startCheckout(plan: 'starter' | 'pro') {
     setLoading(plan);
     try {
-      const token = getToken();
-      const res = await fetch('/api/v1/billing/checkout', {
+      const res = await apiFetch('/api/v1/billing/checkout', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ plan }),
       });
       const data = await res.json() as { data: { url: string }; error?: { userMessage: string } };
@@ -79,10 +72,8 @@ export default function BillingPage() {
   async function openPortal() {
     setPortalLoading(true);
     try {
-      const token = getToken();
-      const res = await fetch('/api/v1/billing/portal', {
+      const res = await apiFetch('/api/v1/billing/portal', {
         method: 'POST',
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
       const data = await res.json() as { data: { url: string }; error?: { userMessage: string } };
       if (res.ok && data.data.url) {

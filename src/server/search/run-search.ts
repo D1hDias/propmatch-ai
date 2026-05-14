@@ -9,7 +9,8 @@ import { scrapeCustomUrl } from './adapters/custom-url';
 import { startHealthMonitor } from './health-monitor';
 import type { NormalizedListing, SearchCriteria, SourceAdapter } from './types';
 
-const SOURCE_TIMEOUT_MS = 30_000; // 30s per source
+const SOURCE_TIMEOUT_MS = 90_000;   // 90s per preset source — Firecrawl JSON extraction needs ~90s
+const CUSTOM_URL_TIMEOUT_MS = 90_000; // 90s per custom URL (Firecrawl MAP can be slow)
 
 // ---------------------------------------------------------------------------
 // Preset adapter registry
@@ -23,10 +24,8 @@ const PRESET_ADAPTERS: Record<string, SourceAdapter> = {
 function getPresetAdapters(selectedPortals?: string[]): SourceAdapter[] {
   if (process.env.SOURCE_MOCK === 'true') return [mockAdapter];
 
-  // If broker selected specific portals, use only those; otherwise default to all
-  const wanted = selectedPortals && selectedPortals.length > 0
-    ? selectedPortals
-    : ['zap', 'vivareal'];
+  // undefined = not specified → use all defaults; [] = explicitly none selected
+  const wanted = selectedPortals ?? ['zap', 'vivareal'];
 
   const adapters: SourceAdapter[] = wanted
     .map((name) => PRESET_ADAPTERS[name])
@@ -103,8 +102,20 @@ export async function runSearch(
         ]),
       ),
     ),
-    // Custom URLs — scrapeCustomUrl never throws, handles errors internally
-    Promise.all(customUrls.map((url) => scrapeCustomUrl(url, criteria))),
+    // Custom URLs with per-URL timeout
+    Promise.all(
+      customUrls.map((url) =>
+        Promise.race([
+          scrapeCustomUrl(url, criteria),
+          new Promise<Awaited<ReturnType<typeof scrapeCustomUrl>>>((resolve) =>
+            setTimeout(
+              () => resolve({ url, listings: [], error: `Custom URL timed out after ${CUSTOM_URL_TIMEOUT_MS}ms` }),
+              CUSTOM_URL_TIMEOUT_MS,
+            ),
+          ),
+        ]),
+      ),
+    ),
   ]);
 
   const listings: NormalizedListing[] = [];

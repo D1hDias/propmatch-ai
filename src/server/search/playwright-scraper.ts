@@ -1,6 +1,7 @@
 import 'server-only';
 import { logger } from '@/server/lib/logger';
 import { callAnthropic } from '@/server/lib/anthropic';
+import { MODELS } from '@/server/lib/models';
 import type { NormalizedListing, SearchCriteria } from './types';
 import { extractAmenities } from './amenity-extractor';
 
@@ -73,7 +74,7 @@ Cada listing tem: url, title, description, price (número), bedrooms, bathrooms,
 Retorne APENAS JSON válido, sem markdown.`;
 
   const response = await callAnthropic({
-    model: 'claude-haiku-4-5-20251001',
+    model: MODELS.playwrightParser,
     system: systemPrompt,
     messages: [
       {

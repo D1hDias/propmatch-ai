@@ -67,36 +67,63 @@ export function startSearchWorker(): void {
           briefingId,
         });
 
-        // 4. Score and rank
-        const scored = scoreAndSort(deduped, criteria);
+        // 4. Hard pre-filter — eliminates obvious mismatches before scoring
+        const preFiltered = hardFilter(deduped, criteria);
+        logger.info('hard filter', { before: deduped.length, after: preFiltered.length, briefingId });
 
-        // 5. Persist properties + briefing_results
-        await persistResults(briefingId, scored, autoWiden);
+        // 5. Score and rank
+        const scored = scoreAndSort(preFiltered, criteria);
 
-        // 6. Auto-widen check — if results < 5 and this was not already a widen
+        // 6. Apply minimum score cutoff — only keep listings with meaningful match
+        const MIN_SCORE = 45;
+        const qualified = scored.filter((s) => s.score >= MIN_SCORE);
+        logger.info('score cutoff', {
+          threshold: MIN_SCORE,
+          before: scored.length,
+          after: qualified.length,
+          briefingId,
+        });
+
+        // 7. Persist properties + briefing_results
+        await persistResults(briefingId, qualified, autoWiden);
+
+        // 8. Auto-widen check — if results < 5 and this was not already a widen
         const widenProposals =
-          !autoWiden && scored.length < AUTO_WIDEN_THRESHOLD
-            ? proposeWidens(criteria, scored.length)
+          !autoWiden && qualified.length < AUTO_WIDEN_THRESHOLD
+            ? proposeWidens(criteria, qualified.length)
             : [];
 
-        // Update briefing status
-        await prisma.briefing.update({
-          where: { id: briefingId },
-          data: {
-            status: 'ready',
-            autoWidenUsed: autoWiden,
-            // Store widen proposals in extractedCriteria for SSE/FE to read
-            ...((widenProposals.length > 0 || customUrlResults.length > 0)
-              ? {
-                  extractedCriteria: {
-                    ...(criteria as unknown as Record<string, unknown>),
-                    ...(widenProposals.length > 0 ? { _widenProposals: widenProposals as unknown[] } : {}),
-                    ...(customUrlResults.length > 0 ? { _customUrlResults: customUrlResults } : {}),
-                  } as Parameters<typeof prisma.briefing.update>[0]['data']['extractedCriteria'],
-                }
-              : {}),
-          },
-        });
+        // Update briefing status.
+        // Preserve the original extractedCriteria (SearchCriteria camelCase); only
+        // append metadata keys so re-search never sees null criteria.
+        const metaUpdate = widenProposals.length > 0 || customUrlResults.length > 0;
+        if (metaUpdate) {
+          const current = await prisma.briefing.findUnique({
+            where: { id: briefingId },
+            select: { extractedCriteria: true },
+          });
+          const merged = {
+            ...(current?.extractedCriteria as Record<string, unknown> ?? {}),
+            ...(widenProposals.length > 0 ? { _widenProposals: widenProposals as unknown[] } : {}),
+            ...(customUrlResults.length > 0 ? { _customUrlResults: customUrlResults } : {}),
+          };
+          await prisma.briefing.update({
+            where: { id: briefingId },
+            data: {
+              status: 'ready',
+              autoWidenUsed: autoWiden,
+              extractedCriteria: merged as object,
+            },
+          });
+        } else {
+          await prisma.briefing.update({
+            where: { id: briefingId },
+            data: {
+              status: 'ready',
+              autoWidenUsed: autoWiden,
+            },
+          });
+        }
 
         logger.info('search job complete', {
           briefingId,
@@ -119,6 +146,64 @@ export function startSearchWorker(): void {
 
   worker.on('failed', (job, err) => {
     logger.error('search worker job failed', { jobId: job?.id, error: err });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Hard pre-filter — eliminates obvious mismatches before scoring
+// ---------------------------------------------------------------------------
+
+function normStr(s: string): string {
+  return s.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim();
+}
+
+/** Returns true when listing neighborhood matches at least one criteria neighborhood. */
+function neighborhoodOk(listing: NormalizedListing, criteria: SearchCriteria): boolean {
+  const hasCriteria = (criteria.neighborhoods?.length ?? 0) > 0 || !!criteria.neighborhood;
+  if (!hasCriteria) return true;
+  // If listing has no neighborhood data, give benefit of the doubt (don't discard)
+  if (!listing.neighborhood) return true;
+
+  const lnorm = normStr(listing.neighborhood);
+  const candidates = [
+    ...(criteria.neighborhoods ?? []),
+    ...(criteria.neighborhood ? [criteria.neighborhood] : []),
+  ];
+
+  return candidates.some((n) => {
+    const cnorm = normStr(n);
+    return lnorm.includes(cnorm) || cnorm.includes(lnorm);
+  });
+}
+
+function hardFilter(listings: NormalizedListing[], criteria: SearchCriteria): NormalizedListing[] {
+  return listings.filter((l) => {
+    // Bedrooms below minimum → hard discard (known value only)
+    if (criteria.bedroomsMin != null && l.bedrooms != null && l.bedrooms < criteria.bedroomsMin) {
+      return false;
+    }
+    // Bedrooms above maximum → hard discard (known value only)
+    if (criteria.bedroomsMax != null && l.bedrooms != null && l.bedrooms > criteria.bedroomsMax) {
+      return false;
+    }
+
+    // Area below minimum → hard discard (known value only)
+    if (criteria.areaMin != null && l.areaSqm != null && l.areaSqm < criteria.areaMin) {
+      return false;
+    }
+
+    // Price more than 30% above maximum → hard discard (known value only)
+    if (criteria.priceMax != null && l.price > 0 && l.price > criteria.priceMax * 1.3) {
+      return false;
+    }
+
+    // Neighborhood: discard listings from a known different neighborhood.
+    // Listings with no neighborhood data pass (we don't want to over-filter on missing data).
+    if (!neighborhoodOk(l, criteria)) {
+      return false;
+    }
+
+    return true;
   });
 }
 
@@ -230,6 +315,7 @@ async function persistResults(
         scrapedAt: new Date(),
       },
       update: {
+        propertyId: property.id,
         rawPrice: String(listing.price),
         scrapedAt: new Date(),
         description: listing.description,

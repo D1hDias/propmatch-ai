@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
+import { apiFetch } from '@/lib/api-fetch';
 
 interface SearchTriggerProps {
   briefingId: string;
@@ -16,11 +17,8 @@ export function SearchTrigger({ briefingId }: SearchTriggerProps) {
     setError(null);
 
     try {
-      const res = await fetch(`/api/v1/briefings/${briefingId}/search`, {
+      const res = await apiFetch(`/api/v1/briefings/${briefingId}/search`, {
         method: 'POST',
-        headers: {
-          Authorization: `Bearer ${getAccessToken()}`,
-        },
       });
 
       if (!res.ok) {
@@ -53,11 +51,3 @@ export function SearchTrigger({ briefingId }: SearchTriggerProps) {
   );
 }
 
-function getAccessToken(): string {
-  // Access token is stored in memory by the auth flow.
-  // For MVP we read from sessionStorage where the login page saves it.
-  if (typeof window !== 'undefined') {
-    return sessionStorage.getItem('access_token') ?? '';
-  }
-  return '';
-}

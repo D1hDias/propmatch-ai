@@ -1,27 +1,13 @@
 import 'server-only';
+import { buildCitySlug } from './city-lookup';
 import type { SearchCriteria } from './types';
 
-/**
- * Maps Portuguese city names to ZAP and VivaReal slug formats.
- * Only the most common SP metro area cities covered for MVP.
- */
-const CITY_SLUGS: Record<string, { zap: string; vivareal: string }> = {
-  'São Paulo': { zap: 'sp+sao-paulo', vivareal: 'sp/sao-paulo' },
-  'Guarulhos': { zap: 'sp+guarulhos', vivareal: 'sp/guarulhos' },
-  'Campinas': { zap: 'sp+campinas', vivareal: 'sp/campinas' },
-  'São Bernardo do Campo': { zap: 'sp+sao-bernardo-do-campo', vivareal: 'sp/sao-bernardo-do-campo' },
-  'Santo André': { zap: 'sp+santo-andre', vivareal: 'sp/santo-andre' },
-  'Barueri': { zap: 'sp+barueri', vivareal: 'sp/barueri' },
-  'Cotia': { zap: 'sp+cotia', vivareal: 'sp/cotia' },
-  'Osasco': { zap: 'sp+osasco', vivareal: 'sp/osasco' },
-  'Santos': { zap: 'sp+santos', vivareal: 'sp/santos' },
-  'Ribeirão Preto': { zap: 'sp+ribeirao-preto', vivareal: 'sp/ribeirao-preto' },
-  'Florianópolis': { zap: 'sc+florianopolis', vivareal: 'sc/florianopolis' },
-  'Curitiba': { zap: 'pr+curitiba', vivareal: 'pr/curitiba' },
-  'Bertioga': { zap: 'sp+bertioga', vivareal: 'sp/bertioga' },
-  'Cajamar': { zap: 'sp+cajamar', vivareal: 'sp/cajamar' },
-  'Embu das Artes': { zap: 'sp+embu-das-artes', vivareal: 'sp/embu-das-artes' },
-};
+// ---------------------------------------------------------------------------
+// URL builder for ZAP Imóveis and VivaReal
+//
+// City → state mapping is handled by city-lookup.ts (IBGE-backed, all Brazil).
+// Neighborhoods are slugified from whatever the user provides — no fixed list.
+// ---------------------------------------------------------------------------
 
 const PROPERTY_TYPE_MAP: Record<string, { zap: string; vivareal: string }> = {
   apartment: { zap: 'apartamentos', vivareal: 'apartamento_residencial' },
@@ -43,18 +29,17 @@ function slugify(text: string): string {
 }
 
 export function buildZapUrl(criteria: SearchCriteria): string {
-  const citySlug = CITY_SLUGS[criteria.city]?.zap ?? `sp+${slugify(criteria.city)}`;
+  const citySlug = buildCitySlug(criteria.city, 'zap');
   const typeSlug = PROPERTY_TYPE_MAP[criteria.propertyType ?? 'apartment']?.zap ?? 'apartamentos';
   const transacao = criteria.purpose === 'rent' ? 'aluguel' : 'venda';
 
   const params = new URLSearchParams();
+  // Neighborhood must be a query param — path-based neighborhood slugs return 404 on ZAP
+  if (criteria.neighborhood) params.set('bairros', slugify(criteria.neighborhood));
   if (criteria.bedroomsMin) params.set('quartos', String(criteria.bedroomsMin));
   if (criteria.priceMax) params.set('precomaximo', String(criteria.priceMax));
   if (criteria.priceMin) params.set('precominimo', String(criteria.priceMin));
   if (criteria.areaMin) params.set('areaminima', String(criteria.areaMin));
-  if (criteria.neighborhood) {
-    // ZAP encodes neighborhood in the onde param — we append it to city slug
-  }
 
   const base = `https://www.zapimoveis.com.br/${transacao}/${typeSlug}/${citySlug}/`;
   const qs = params.toString();
@@ -62,21 +47,21 @@ export function buildZapUrl(criteria: SearchCriteria): string {
 }
 
 export function buildVivaRealUrl(criteria: SearchCriteria): string {
-  const citySlug = CITY_SLUGS[criteria.city]?.vivareal ?? `sp/${slugify(criteria.city)}`;
+  const citySlug = buildCitySlug(criteria.city, 'vivareal');
   const typeSlug =
     PROPERTY_TYPE_MAP[criteria.propertyType ?? 'apartment']?.vivareal ??
     'apartamento_residencial';
   const transacao = criteria.purpose === 'rent' ? 'aluguel' : 'venda';
 
-  const neighborhoodSlug = criteria.neighborhood ? `${slugify(criteria.neighborhood)}/` : '';
-  const base = `https://www.vivareal.com.br/${transacao}/${citySlug}/${neighborhoodSlug}${typeSlug}/`;
-
   const params = new URLSearchParams();
+  // Neighborhood must be a query param — path-based neighborhood slugs return 404 on VivaReal
+  if (criteria.neighborhood) params.set('bairros', slugify(criteria.neighborhood));
   if (criteria.bedroomsMin) params.set('quartos', String(criteria.bedroomsMin));
   if (criteria.priceMax) params.set('precoMaximo', String(criteria.priceMax));
   if (criteria.priceMin) params.set('precoMinimo', String(criteria.priceMin));
   if (criteria.areaMin) params.set('areaMinima', String(criteria.areaMin));
 
+  const base = `https://www.vivareal.com.br/${transacao}/${citySlug}/${typeSlug}/`;
   const qs = params.toString();
   return qs ? `${base}?${qs}` : base;
 }

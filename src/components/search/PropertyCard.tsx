@@ -1,6 +1,7 @@
 'use client';
 
 import Image from 'next/image';
+import { useState } from 'react';
 import { TrendingUp } from 'lucide-react';
 
 export interface PropertyCardData {
@@ -30,6 +31,14 @@ interface PropertyCardProps {
   onToggleSelect?: (id: string) => void;
 }
 
+const SOURCE_LABELS: Record<string, string> = {
+  zap: 'ZAP',
+  vivareal: 'VivaReal',
+  portal_x: 'Link personalizado',
+  custom: 'Link personalizado',
+  partner_b: 'Parceiro',
+};
+
 const AMENITY_LABELS: Record<string, string> = {
   portaria24h: 'Portaria 24h',
   petFriendly: 'Pet friendly',
@@ -43,6 +52,30 @@ const AMENITY_LABELS: Record<string, string> = {
   arCondicionado: 'Ar condicionado',
   acessibilidade: 'Acessibilidade',
 };
+
+function SourceFavicon({ url, fallbackLabel }: { url: string; fallbackLabel: string }) {
+  const [failed, setFailed] = useState(false);
+
+  let hostname: string | null = null;
+  try { hostname = new URL(url).hostname; } catch { /* invalid url */ }
+
+  if (failed || !hostname) {
+    return <span className="text-[10px] uppercase tracking-wide text-white">{fallbackLabel}</span>;
+  }
+
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={`https://www.google.com/s2/favicons?domain=${hostname}&sz=16`}
+      alt={fallbackLabel}
+      title={fallbackLabel}
+      width={16}
+      height={16}
+      className="rounded-sm"
+      onError={() => setFailed(true)}
+    />
+  );
+}
 
 function matchColor(score: number): { bg: string; text: string; ring: string } {
   if (score >= 80) return { bg: 'bg-[#4FD66E]', text: 'text-white', ring: 'ring-[#4FD66E]/30' };
@@ -64,7 +97,7 @@ export function PropertyCard({ property, selected, onToggleSelect }: PropertyCar
   const highlightedAmenities = Object.entries(property.extractedAmenities)
     .filter(([k, v]) => v && AMENITY_LABELS[k])
     .map(([k]) => AMENITY_LABELS[k]!)
-    .slice(0, 4);
+    .slice(0, 2);
 
   const score = property.fitScore != null ? Math.round(property.fitScore) : null;
   const colors = score != null ? matchColor(score) : null;
@@ -99,7 +132,7 @@ export function PropertyCard({ property, selected, onToggleSelect }: PropertyCar
       )}
 
       {/* Photo */}
-      <div className="relative h-44 w-full bg-muted">
+      <div className="relative h-36 w-full bg-muted">
         {photo ? (
           <Image
             src={photo}
@@ -107,31 +140,42 @@ export function PropertyCard({ property, selected, onToggleSelect }: PropertyCar
             fill
             className="object-cover"
             unoptimized // portal photos are external — no Next.js optimization
+            onError={(e) => {
+              const target = e.currentTarget as HTMLImageElement;
+              target.style.display = 'none';
+              const parent = target.parentElement;
+              if (parent) {
+                const fallback = document.createElement('div');
+                fallback.className = 'h-full w-full flex items-center justify-center text-muted-foreground text-sm';
+                fallback.textContent = 'Sem foto';
+                parent.appendChild(fallback);
+              }
+            }}
           />
         ) : (
           <div className="h-full w-full flex items-center justify-center text-muted-foreground text-sm">
             Sem foto
           </div>
         )}
-        {/* Source badge */}
-        <span className="absolute bottom-2 right-2 rounded-md bg-black/60 px-2 py-0.5 text-[10px] uppercase tracking-wide text-white">
-          {property.source}
+        {/* Source badge — favicon from Google's free CDN */}
+        <span className="absolute bottom-2 right-2 rounded-md bg-black/60 px-1.5 py-1 flex items-center gap-1">
+          <SourceFavicon url={property.url} fallbackLabel={SOURCE_LABELS[property.source] ?? property.source} />
         </span>
       </div>
 
       {/* Content */}
-      <div className="p-4 space-y-3">
+      <div className="p-3 space-y-2">
         {/* Price */}
-        <p className="text-xl font-bold text-foreground">
+        <p className="text-base font-bold text-foreground">
           {formatPrice(property.price, property.priceType)}
         </p>
 
         {/* Title / address */}
-        <p className="text-sm text-muted-foreground line-clamp-1">{property.title}</p>
-        <p className="text-xs text-muted-foreground">{property.neighborhood}, {property.city}</p>
+        <p className="text-xs text-muted-foreground line-clamp-1">{property.title}</p>
+        <p className="text-xs text-muted-foreground truncate">{property.neighborhood}, {property.city}</p>
 
         {/* Specs */}
-        <div className="flex gap-3 text-sm text-muted-foreground flex-wrap">
+        <div className="flex gap-2 text-xs text-muted-foreground flex-wrap">
           {property.bedrooms != null && (
             <span>{property.bedrooms} {property.bedrooms === 1 ? 'quarto' : 'quartos'}</span>
           )}
@@ -164,7 +208,7 @@ export function PropertyCard({ property, selected, onToggleSelect }: PropertyCar
           href={property.url}
           target="_blank"
           rel="noopener noreferrer"
-          className="inline-block text-xs text-primary underline underline-offset-2 hover:no-underline"
+          className="inline-block text-[11px] text-primary underline underline-offset-2 hover:no-underline"
           onClick={(e) => e.stopPropagation()}
         >
           Ver no portal →

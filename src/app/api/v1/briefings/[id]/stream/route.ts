@@ -1,5 +1,6 @@
 import type { NextRequest } from 'next/server';
 import { requireAuth } from '@/server/auth/context';
+import { verifyAccessToken } from '@/server/auth/jwt';
 import { prisma } from '@/server/db/client';
 import { AppError } from '@/server/lib/errors';
 
@@ -21,9 +22,13 @@ export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  // EventSource doesn't support custom headers — accept token via query param as fallback
   let ctx;
   try {
-    ctx = await requireAuth(req);
+    const tokenFromQuery = req.nextUrl.searchParams.get('token');
+    ctx = tokenFromQuery
+      ? await verifyAccessToken(tokenFromQuery)
+      : await requireAuth(req);
   } catch {
     return new Response('Unauthorized', { status: 401 });
   }
@@ -42,7 +47,7 @@ export async function GET(
   const stream = new ReadableStream({
     async start(controller) {
       const POLL_INTERVAL = 1000; // 1s
-      const MAX_WAIT_MS = 60_000; // 60s max
+      const MAX_WAIT_MS = 180_000; // 3 min — Firecrawl MAP+scrape can take 60-120s
       const started = Date.now();
       let lastResultCount = 0;
 
@@ -105,7 +110,7 @@ export async function GET(
                   furnished: r.property.furnished,
                   amenities: (r.property.amenities as string[]) ?? [],
                   extractedAmenities: (r.property.extractedAmenities as Record<string, boolean>) ?? {},
-                  source: r.property.sources[0]?.source ?? 'zap',
+                  source: r.property.sources[0]?.source ?? 'portal_x',
                   fitScore: r.fitScore,
                 })),
               }),

@@ -1,6 +1,7 @@
 import 'server-only';
 import { z } from 'zod';
 import { callAnthropic } from '@/server/lib/anthropic';
+import { MODELS } from '@/server/lib/models';
 
 // ---------------------------------------------------------------------------
 // Output schema — what we ask the LLM to return
@@ -102,6 +103,12 @@ ABREVIAÇÕES COMUNS:
 - "ñ" / "n/" → não (negar o critério seguinte)
 - "kitnet" / "kit" / "studio" / "flat" com 1 dorm → property_type: "studio"
 
+QUARTOS — EXATO vs MÍNIMO:
+- "3 quartos" / "3 dorms" / "3 qts" SEM qualificador → bedrooms_min: 3 E bedrooms_max: 3 (quer exatamente 3)
+- "pelo menos 3" / "mínimo 3" / "a partir de 3" / "3+" → só bedrooms_min: 3 (quer 3 ou mais)
+- "até 3 quartos" / "no máximo 3" → só bedrooms_max: 3
+- "2 a 3 quartos" / "2 ou 3" → bedrooms_min: 2 E bedrooms_max: 3
+
 BAIRROS → CIDADE:
 - Bairros conhecidos de SP (Moema, Pinheiros, Vila Mariana, Itaim, Brooklin, Lapa, etc.) → city: "São Paulo"
 - Bairros conhecidos do RJ (Ipanema, Leblon, Barra, Botafogo, etc.) → city: "Rio de Janeiro"
@@ -155,10 +162,11 @@ export interface ExtractionResult {
 
 export async function extractBriefing(rawText: string): Promise<ExtractionResult> {
   const response = await callAnthropic({
+    model: MODELS.briefingExtraction,
     system: SYSTEM_PROMPT,
     prompt: rawText,
     maxTokens: 512,
-    timeoutMs: 15_000,
+    timeoutMs: 20_000, // Gemini 2.5 Flash pode ser ligeiramente mais lento na primeira chamada
     maxAttempts: 3,
   });
 

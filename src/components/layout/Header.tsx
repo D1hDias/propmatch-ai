@@ -1,5 +1,7 @@
 'use client';
 
+import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import { Bell, Menu, ChevronDown, LogOut, User, Settings } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
@@ -24,6 +26,15 @@ interface HeaderProps {
 }
 
 export function Header({ onMenuClick, pageTitle = 'Dashboard' }: HeaderProps) {
+  const router = useRouter();
+
+  function handleLogout() {
+    localStorage.removeItem('access_token');
+    fetch('/api/v1/auth/logout', { method: 'POST', credentials: 'include' }).finally(() => {
+      router.push('/login');
+    });
+  }
+
   return (
     <header
       className="fixed top-0 right-0 left-0 lg:left-sidebar h-header bg-white border-b border-border z-20 flex items-center px-6 lg:px-8 gap-4 shadow-header"
@@ -83,16 +94,23 @@ export function Header({ onMenuClick, pageTitle = 'Dashboard' }: HeaderProps) {
               <p className="text-xs text-muted-foreground font-normal">{MOCK_USER.email}</p>
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
-            <DropdownMenuItem className="gap-2 cursor-pointer">
-              <User className="w-4 h-4" />
-              Perfil
+            <DropdownMenuItem asChild className="gap-2 cursor-pointer">
+              <Link href="/settings/profile">
+                <User className="w-4 h-4" />
+                Perfil
+              </Link>
             </DropdownMenuItem>
-            <DropdownMenuItem className="gap-2 cursor-pointer">
-              <Settings className="w-4 h-4" />
-              Configurações
+            <DropdownMenuItem asChild className="gap-2 cursor-pointer">
+              <Link href="/settings">
+                <Settings className="w-4 h-4" />
+                Configurações
+              </Link>
             </DropdownMenuItem>
             <DropdownMenuSeparator />
-            <DropdownMenuItem className="gap-2 cursor-pointer text-danger focus:text-danger focus:bg-red-50">
+            <DropdownMenuItem
+              className="gap-2 cursor-pointer text-danger focus:text-danger focus:bg-red-50"
+              onClick={handleLogout}
+            >
               <LogOut className="w-4 h-4" />
               Sair
             </DropdownMenuItem>

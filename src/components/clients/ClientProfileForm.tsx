@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Loader, Plus, X } from 'lucide-react';
+import { apiFetch } from '@/lib/api-fetch';
 import {
   CLIENT_URGENCY_LABELS,
   CLIENT_CRM_STATUS_LABELS,
@@ -166,8 +167,7 @@ export function ClientProfileForm({ clientId, defaultValues, onSuccess }: Client
     setError('');
     setSubmitting(true);
 
-    const token = sessionStorage.getItem('access_token');
-    const profile: ClientProfile = {
+        const profile: ClientProfile = {
       purpose,
       neighborhoods,
       propertyTypes,
@@ -198,11 +198,10 @@ export function ClientProfileForm({ clientId, defaultValues, onSuccess }: Client
     try {
       const url = isEdit ? `/api/v1/clients/${clientId}` : '/api/v1/clients';
       const method = isEdit ? 'PATCH' : 'POST';
-      const res = await fetch(url, {
+      const res = await apiFetch(url, {
         method,
         headers: {
           'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
         body: JSON.stringify(payload),
       });

@@ -75,6 +75,8 @@ export interface AnthropicRequestOptions {
   max_tokens?: number;
   timeoutMs?: number;
   maxAttempts?: number;
+  /** When true, instructs the model to respond with valid JSON only (json_object mode). */
+  jsonMode?: boolean;
 }
 
 export interface AnthropicResponse {
@@ -115,6 +117,7 @@ export async function callAnthropic(opts: AnthropicRequestOptions): Promise<Anth
     max_tokens,
     timeoutMs = 15_000,
     maxAttempts = 3,
+    jsonMode = false,
   } = opts;
 
   const resolvedMaxTokens = maxTokens ?? max_tokens ?? 1024;
@@ -145,6 +148,7 @@ export async function callAnthropic(opts: AnthropicRequestOptions): Promise<Anth
               model,
               max_tokens: resolvedMaxTokens,
               messages: allMessages,
+              ...(jsonMode ? { response_format: { type: 'json_object' as const } } : {}),
             },
             { signal: controller.signal },
           );

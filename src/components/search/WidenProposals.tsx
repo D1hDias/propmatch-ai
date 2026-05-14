@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { ChevronRight, Expand } from 'lucide-react';
+import { apiFetch } from '@/lib/api-fetch';
 
 export interface WidenProposal {
   label: string;
@@ -26,12 +27,10 @@ export function WidenProposals({ briefingId, proposals, onWidenStarted }: WidenP
     setError(null);
 
     try {
-      const token = typeof window !== 'undefined' ? sessionStorage.getItem('access_token') : null;
-      const res = await fetch(`/api/v1/briefings/${briefingId}/widen`, {
+            const res = await apiFetch(`/api/v1/briefings/${briefingId}/widen`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
         body: JSON.stringify({ criteria: proposal.criteria }),
       });

@@ -4,6 +4,7 @@ import { prisma } from '@/server/db/client';
 import { apiSuccess, apiError } from '@/server/lib/response';
 import { AppError } from '@/server/lib/errors';
 import { searchQueue } from '@/server/search/queue';
+import type { SearchCriteria } from '@/server/search/types';
 
 export const dynamic = 'force-dynamic';
 
@@ -47,11 +48,17 @@ export async function POST(
       data: { status: 'searching' },
     });
 
+    // extractedCriteria is stored as SearchCriteria (camelCase). Strip internal metadata
+    // keys (_widenProposals, _customUrlResults) that queue.ts may have appended.
+    const { _widenProposals: _w, _customUrlResults: _c, ...criteriaFields } =
+      briefing.extractedCriteria as Record<string, unknown>;
+    const criteria = criteriaFields as unknown as SearchCriteria;
+
     // Enqueue the search job (BullMQ)
     const job = await searchQueue.add('search', {
       briefingId: id,
       userId: ctx.sub,
-      criteria: briefing.extractedCriteria,
+      criteria,
       portals: briefing.selectedPortals,
       customUrls: briefing.customUrls,
     });

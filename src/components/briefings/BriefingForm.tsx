@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { ClientSelector } from '@/components/clients/ClientSelector';
 import { Loader, Send, FileText, Plus, X } from 'lucide-react';
 import { PRESET_PORTALS, PORTAL_LABELS, type PresetPortal } from '@/lib/schemas/briefing';
+import { apiFetch } from '@/lib/api-fetch';
 
 const MIN_CHARS = 10;
 const MAX_CHARS = 2000;
@@ -20,7 +21,7 @@ export function BriefingForm() {
   const router = useRouter();
   const [text, setText] = useState('');
   const [clientId, setClientId] = useState<string | null>(null);
-  const [selectedPortals, setSelectedPortals] = useState<PresetPortal[]>(['zap', 'vivareal']);
+  const [selectedPortals, setSelectedPortals] = useState<PresetPortal[]>([]);
   const [customUrls, setCustomUrls] = useState<string[]>([]);
   const [customUrlInput, setCustomUrlInput] = useState('');
   const [error, setError] = useState('');
@@ -28,7 +29,7 @@ export function BriefingForm() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const charCount = text.length;
-  const isValid = charCount >= MIN_CHARS && charCount <= MAX_CHARS && selectedPortals.length > 0;
+  const isValid = charCount >= MIN_CHARS && charCount <= MAX_CHARS && (selectedPortals.length > 0 || customUrls.length > 0);
 
   function togglePortal(portal: PresetPortal) {
     setSelectedPortals((prev) =>
@@ -57,7 +58,7 @@ export function BriefingForm() {
     setSubmitting(true);
 
     try {
-      const res = await fetch('/api/v1/briefings', {
+      const res = await apiFetch('/api/v1/briefings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -167,8 +168,8 @@ export function BriefingForm() {
             );
           })}
         </div>
-        {selectedPortals.length === 0 && (
-          <p className="text-xs text-destructive">Selecione pelo menos um portal.</p>
+        {selectedPortals.length === 0 && customUrls.length === 0 && (
+          <p className="text-xs text-destructive">Selecione pelo menos um portal ou adicione um link de imobiliária.</p>
         )}
 
         {/* Custom URLs */}

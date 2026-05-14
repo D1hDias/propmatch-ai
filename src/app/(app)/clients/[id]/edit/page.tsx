@@ -5,6 +5,7 @@ import { useParams, useRouter } from 'next/navigation';
 import { ChevronLeft, Loader } from 'lucide-react';
 import { ClientProfileForm } from '@/components/clients/ClientProfileForm';
 import type { CreateClientInput, ClientProfile } from '@/lib/schemas/client';
+import { apiFetch } from '@/lib/api-fetch';
 
 interface ClientDetail {
   id: string;
@@ -27,10 +28,7 @@ export default function EditClientPage() {
   const [error, setError] = useState('');
 
   useEffect(() => {
-    const token = sessionStorage.getItem('access_token');
-    fetch(`/api/v1/clients/${id}`, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    })
+    apiFetch(`/api/v1/clients/${id}`)
       .then((r) => r.json())
       .then((data: { client?: ClientDetail }) => {
         if (!data.client) { setError('Cliente não encontrado.'); }

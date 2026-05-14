@@ -5,6 +5,7 @@ import { PropertyCard, type PropertyCardData } from './PropertyCard';
 import { WidenProposals, type WidenProposal } from './WidenProposals';
 import { SearchFilters, applyFilters, type FilterState } from './SearchFilters';
 import { WhatsAppMessageModal } from '@/components/messaging/WhatsAppMessageModal';
+import { getFreshToken } from '@/lib/api-fetch';
 
 interface SearchResultsProps {
   briefingId: string;
@@ -38,51 +39,59 @@ export function SearchResults({ briefingId }: SearchResultsProps) {
   const eventSourceRef = useRef<EventSource | null>(null);
 
   useEffect(() => {
-    const es = new EventSource(`/api/v1/briefings/${briefingId}/stream`);
-    eventSourceRef.current = es;
+    let es: EventSource | null = null;
+    let cancelled = false;
 
-    es.addEventListener('status_update', (e) => {
-      const data = JSON.parse(e.data) as { status: string };
-      if (data.status === 'searching') setState('searching');
-    });
+    void getFreshToken().then((token) => {
+      if (cancelled) return;
+      const url = `/api/v1/briefings/${briefingId}/stream${token ? `?token=${encodeURIComponent(token)}` : ''}`;
+      es = new EventSource(url);
+      eventSourceRef.current = es;
 
-    es.addEventListener('result_chunk', (e) => {
-      const data = JSON.parse(e.data) as { listings: PropertyCardData[] };
-      setState('searching');
-      setListings((prev) => {
-        // Deduplicate by id (SSE may re-send on reconnect)
-        const ids = new Set(prev.map((p) => p.id));
-        const incoming = data.listings.filter((l) => !ids.has(l.id));
-        return [...prev, ...incoming];
+      es.addEventListener('status_update', (e) => {
+        const data = JSON.parse(e.data) as { status: string };
+        if (data.status === 'searching') setState('searching');
       });
-    });
 
-    es.addEventListener('search_complete', (e) => {
-      const data = JSON.parse(e.data) as { total: number; widenProposals?: WidenProposal[]; customUrlResults?: CustomUrlResult[] };
-      setTotal(data.total);
-      setWidenProposals(data.widenProposals ?? []);
-      setCustomUrlResults(data.customUrlResults ?? []);
-      setState('done');
-      es.close();
-    });
+      es.addEventListener('result_chunk', (e) => {
+        const data = JSON.parse(e.data) as { listings: PropertyCardData[] };
+        setState('searching');
+        setListings((prev) => {
+          const ids = new Set(prev.map((p) => p.id));
+          const incoming = data.listings.filter((l) => !ids.has(l.id));
+          return [...prev, ...incoming];
+        });
+      });
 
-    es.addEventListener('search_error', (e) => {
-      const data = JSON.parse(e.data) as { message: string };
-      setErrorMsg(data.message);
-      setState('error');
-      es.close();
-    });
+      es.addEventListener('search_complete', (e) => {
+        const data = JSON.parse(e.data) as { total: number; widenProposals?: WidenProposal[]; customUrlResults?: CustomUrlResult[] };
+        setTotal(data.total);
+        setWidenProposals(data.widenProposals ?? []);
+        setCustomUrlResults(data.customUrlResults ?? []);
+        setState('done');
+        es!.close();
+      });
 
-    es.onerror = () => {
-      setState('error');
-      setErrorMsg('Conexão perdida. Recarregue a página para tentar novamente.');
-      es.close();
-    };
+      es.addEventListener('search_error', (e) => {
+        const data = JSON.parse(e.data) as { message: string };
+        setErrorMsg(data.message);
+        setState('error');
+        es!.close();
+      });
+
+      es.onerror = () => {
+        setState('error');
+        setErrorMsg('Conexão perdida. Recarregue a página para tentar novamente.');
+        es!.close();
+      };
+    });
 
     return () => {
-      es.close();
+      cancelled = true;
+      es?.close();
+      eventSourceRef.current = null;
     };
-  }, [briefingId, searchEpoch]);
+  }, [briefingId, searchEpoch]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function toggleSelect(id: string) {
     setSelected((prev) => {
@@ -170,7 +179,7 @@ export function SearchResults({ briefingId }: SearchResultsProps) {
                   {failed ? (
                     <span className="text-[#FF5E5E] text-xs">não foi possível acessar</span>
                   ) : (
-                    <span className="text-muted-foreground text-xs">{r.count} imóvel{r.count !== 1 ? 'is' : ''} encontrado{r.count !== 1 ? 's' : ''}</span>
+                    <span className="text-muted-foreground text-xs" title="Imóveis coletados antes dos filtros de critérios">{r.count} {r.count === 1 ? 'imóvel coletado' : 'imóveis coletados'}</span>
                   )}
                 </div>
               );

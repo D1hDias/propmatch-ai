@@ -5,20 +5,11 @@ const nextConfig: NextConfig = {
   experimental: {
     // typedRoutes: true, // Enable once route definitions are stable
   },
-  webpack(config, { isServer }) {
-    if (isServer) {
-      // Playwright is a devDependency used only in tests and the scraper VPS.
-      // Excluding it prevents Next.js from trying to bundle it (and its
-      // optional chromium-bidi dep) into the server bundle.
-      config.externals = [
-        ...(Array.isArray(config.externals) ? config.externals : [config.externals ?? []].flat()),
-        'playwright',
-        'playwright-core',
-        '@playwright/test',
-      ];
-    }
-    return config;
-  },
+  // Playwright is a devDependency used only in tests and the scraper VPS.
+  // serverExternalPackages works for both webpack and Turbopack — prevents
+  // Next.js from bundling playwright-core (which includes .ttf assets that
+  // Turbopack can't handle).
+  serverExternalPackages: ['playwright', 'playwright-core', '@playwright/test'],
 };
 
 export default withSentryConfig(nextConfig, {

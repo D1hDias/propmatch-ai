@@ -6,7 +6,10 @@ import 'server-only';
 
 export interface SearchCriteria {
   city: string;
+  /** Primary neighborhood (used for URL construction). */
   neighborhood?: string | null;
+  /** All requested neighborhoods — listing matches if it's in ANY of them. */
+  neighborhoods?: string[];
   propertyType?: string | null;
   bedroomsMin?: number | null;
   bedroomsMax?: number | null;
@@ -18,7 +21,10 @@ export interface SearchCriteria {
   parkingMin?: number | null;
   furnished?: boolean | null;
   petFriendly?: boolean | null;
+  /** Amenity/detail terms from the briefing (e.g. "sol da manhã", "portaria 24h"). */
   amenities?: string[];
+  /** Free-text notes that describe desirable details. Searched in listing descriptions. */
+  notes?: string;
   purpose: 'buy' | 'rent';
 }
 

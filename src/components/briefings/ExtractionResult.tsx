@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { apiFetch } from '@/lib/api-fetch';
 import type { ExtractedCriteria } from '@/server/briefings/extract';
 
 // ---------------------------------------------------------------------------
@@ -197,23 +198,27 @@ function CriteriaGrid({ criteria }: { criteria: ExtractedCriteria }) {
 interface ExtractionResultProps {
   briefingId: string;
   initialData: Briefing;
+  onUpdate?: (updated: Briefing) => void;
 }
 
-export function ExtractionResult({ briefingId, initialData }: ExtractionResultProps) {
+export function ExtractionResult({ briefingId, initialData, onUpdate }: ExtractionResultProps) {
   const [data, setData] = useState<Briefing>(initialData);
   const [polling, setPolling] = useState(initialData.status === 'extracting');
 
   const fetchBriefing = useCallback(async () => {
     try {
-      const res = await fetch(`/api/v1/briefings/${briefingId}`);
+      const res = await apiFetch(`/api/v1/briefings/${briefingId}`);
       if (!res.ok) return;
       const updated = (await res.json()) as Briefing;
       setData(updated);
-      if (updated.status !== 'extracting') setPolling(false);
+      if (updated.status !== 'extracting') {
+        setPolling(false);
+        onUpdate?.(updated);
+      }
     } catch {
       setPolling(false);
     }
-  }, [briefingId]);
+  }, [briefingId, onUpdate]);
 
   useEffect(() => {
     if (!polling) return;

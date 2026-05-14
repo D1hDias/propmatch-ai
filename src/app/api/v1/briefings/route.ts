@@ -1,7 +1,8 @@
 import type { NextRequest } from 'next/server';
 import { requireAuth } from '@/server/auth/context';
+import { withRlsContext } from '@/server/db/client';
 import { createBriefingSchema } from '@/lib/schemas/briefing';
-import { createBriefing, listBriefings } from '@/server/briefings/service';
+import { createBriefing } from '@/server/briefings/service';
 import { AppError } from '@/server/lib/errors';
 import { apiSuccess, apiError } from '@/server/lib/response';
 
@@ -39,7 +40,28 @@ export async function GET(req: NextRequest) {
     const page = Math.max(1, parseInt(searchParams.get('page') ?? '1', 10));
     const perPage = Math.min(100, Math.max(1, parseInt(searchParams.get('per_page') ?? '20', 10)));
 
-    const result = await listBriefings(ctx.sub, page, perPage);
+    const result = await withRlsContext(ctx.sub, ctx.role, async (tx) => {
+      const skip = (page - 1) * perPage;
+      const [items, total] = await Promise.all([
+        tx.briefing.findMany({
+          where: { userId: ctx.sub },
+          orderBy: { createdAt: 'desc' },
+          skip,
+          take: perPage,
+          select: {
+            id: true,
+            rawText: true,
+            status: true,
+            reviewStatus: true,
+            extractionConfidence: true,
+            createdAt: true,
+            clientId: true,
+          },
+        }),
+        tx.briefing.count({ where: { userId: ctx.sub } }),
+      ]);
+      return { items, total, page, perPage };
+    });
     return apiSuccess(result);
   } catch (err) {
     return apiError(err);

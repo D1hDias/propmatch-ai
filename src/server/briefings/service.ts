@@ -1,11 +1,13 @@
 import 'server-only';
 import { prisma } from '@/server/db/client';
 import { extractBriefing } from './extract';
+import { toSearchCriteria } from './criteria-transform';
 import { hitlQueue } from './hitl-queue';
+import { searchQueue } from '@/server/search/queue';
 import type { CreateBriefingInput } from '@/lib/schemas/briefing';
 
 const CONFIDENCE_AUTO_APPROVE = 0.85;
-const CONFIDENCE_AUTO_APPROVE_WITH_OVERRIDE = 0.80;
+const CONFIDENCE_AUTO_APPROVE_WITH_OVERRIDE = 0.65;
 
 /**
  * Creates a briefing, persists it, then runs LLM extraction in the background.
@@ -34,16 +36,22 @@ export async function createBriefing(
   });
 
   // Fire-and-forget extraction — does not block the HTTP response
-  void runExtraction(briefing.id, input.raw_text);
+  void runExtraction(briefing.id, input.raw_text, briefing.selectedPortals, briefing.customUrls as string[]);
 
   return briefing.id;
 }
 
 /**
  * Runs LLM extraction and updates the briefing row with the results.
+ * If extraction is auto-approved, immediately enqueues the search job.
  * Called asynchronously after createBriefing returns.
  */
-async function runExtraction(briefingId: string, rawText: string): Promise<void> {
+async function runExtraction(
+  briefingId: string,
+  rawText: string,
+  portals: string[],
+  customUrls: string[],
+): Promise<void> {
   try {
     const result = await extractBriefing(rawText);
 
@@ -54,7 +62,7 @@ async function runExtraction(briefingId: string, rawText: string): Promise<void>
     let reviewMode: 'auto_approved' | 'hitl' | null;
 
     if (!hasCritical || confidence < CONFIDENCE_AUTO_APPROVE_WITH_OVERRIDE) {
-      // Route to HITL
+      // Route to HITL — update to 'ready' so the UI shows extraction result
       reviewStatus = 'pending';
       reviewMode = 'hitl';
 
@@ -65,25 +73,41 @@ async function runExtraction(briefingId: string, rawText: string): Promise<void>
         confidence,
         missingFields: result.missingCriticalFields,
       });
-    } else if (confidence >= CONFIDENCE_AUTO_APPROVE) {
-      reviewStatus = 'not_required';
-      reviewMode = 'auto_approved';
-    } else {
-      // 0.80–0.85: auto-approved but flagged
-      reviewStatus = 'approved';
-      reviewMode = 'auto_approved';
-    }
 
-    await prisma.briefing.update({
-      where: { id: briefingId },
-      data: {
-        extractedCriteria: result.criteria,
-        extractionConfidence: result.confidence,
-        reviewStatus,
-        reviewMode: reviewMode ?? undefined,
-        status: 'ready',
-      },
-    });
+      await prisma.briefing.update({
+        where: { id: briefingId },
+        data: {
+          extractedCriteria: toSearchCriteria(result.criteria) as object,
+          extractionConfidence: result.confidence,
+          reviewStatus,
+          reviewMode,
+          status: 'ready',
+        },
+      });
+    } else {
+      // Auto-approved: start search immediately
+      reviewStatus = confidence >= CONFIDENCE_AUTO_APPROVE ? 'not_required' : 'approved';
+      reviewMode = 'auto_approved';
+
+      await prisma.briefing.update({
+        where: { id: briefingId },
+        data: {
+          extractedCriteria: toSearchCriteria(result.criteria) as object,
+          extractionConfidence: result.confidence,
+          reviewStatus,
+          reviewMode,
+          status: 'searching',
+        },
+      });
+
+      await searchQueue.add('search', {
+        briefingId,
+        userId: (await prisma.briefing.findUniqueOrThrow({ where: { id: briefingId }, select: { userId: true } })).userId,
+        criteria: toSearchCriteria(result.criteria),
+        portals,
+        customUrls,
+      });
+    }
   } catch {
     await prisma.briefing.update({
       where: { id: briefingId },

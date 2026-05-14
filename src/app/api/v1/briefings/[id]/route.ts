@@ -1,6 +1,6 @@
 import type { NextRequest } from 'next/server';
 import { requireAuth } from '@/server/auth/context';
-import { getBriefing } from '@/server/briefings/service';
+import { withRlsContext } from '@/server/db/client';
 import { AppError } from '@/server/lib/errors';
 import { apiSuccess, apiError } from '@/server/lib/response';
 
@@ -15,7 +15,17 @@ export async function GET(
     const ctx = await requireAuth(req);
     const { id } = await params;
 
-    const briefing = await getBriefing(id, ctx.sub);
+    const briefing = await withRlsContext(ctx.sub, ctx.role, (tx) =>
+      tx.briefing.findFirst({
+        where: { id, userId: ctx.sub },
+        include: {
+          hitlMetrics: { orderBy: { queuedAt: 'desc' }, take: 1 },
+          client: {
+            select: { id: true, name: true, isGuest: true, createdAt: true, softArchivedAt: true },
+          },
+        },
+      }),
+    );
 
     if (!briefing) {
       throw new AppError(

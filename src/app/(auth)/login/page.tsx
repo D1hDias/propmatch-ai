@@ -45,7 +45,7 @@ export default function LoginPage() {
         return;
       }
       if (data.access_token) {
-        sessionStorage.setItem('access_token', data.access_token);
+        localStorage.setItem('access_token', data.access_token); // persiste entre abas
       }
       router.push('/dashboard');
     } catch {

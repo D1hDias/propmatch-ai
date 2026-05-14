@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { FileText, Home, MessageCircle, Users, CheckCircle, Loader, Clock, MapPin, BarChart2 } from 'lucide-react';
 import { KpiCard } from '@/components/dashboard/KpiCard';
 import { CLIENT_CRM_STATUS_LABELS, CLIENT_CRM_STATUS_COLORS } from '@/lib/schemas/client';
+import { apiFetch } from '@/lib/api-fetch';
 
 interface WeekPoint { week: string; briefings: number }
 interface Neighborhood { name: string; count: number }
@@ -55,10 +56,7 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const token = sessionStorage.getItem('access_token');
-    fetch('/api/v1/analytics/summary', {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    })
+    apiFetch('/api/v1/analytics/summary')
       .then((r) => r.json())
       .then((d: Analytics & { error?: unknown }) => setAnalytics(d.error ? null : d))
       .finally(() => setLoading(false));

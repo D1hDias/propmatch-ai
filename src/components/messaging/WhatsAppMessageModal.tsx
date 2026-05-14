@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { X, Copy, Check, Loader2, ExternalLink, Users, User } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import type { PropertyCardData } from '@/components/search/PropertyCard';
+import { apiFetch } from '@/lib/api-fetch';
 
 type MessageTarget = 'client' | 'partner';
 
@@ -39,12 +40,10 @@ export function WhatsAppMessageModal({
     setLoading(true);
     setError(null);
     try {
-      const token = typeof window !== 'undefined' ? sessionStorage.getItem('access_token') : null;
-      const res = await fetch(`/api/v1/briefings/${briefingId}/messages`, {
+            const res = await apiFetch(`/api/v1/briefings/${briefingId}/messages`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
         body: JSON.stringify({
           target,

@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { Shield, Download, Trash2, Loader2, Check, AlertTriangle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { apiFetch } from '@/lib/api-fetch';
 
 interface ExportStatus {
   status: 'none' | 'requested' | 'in_progress' | 'completed' | 'failed';
@@ -19,15 +20,9 @@ export default function PrivacyPage() {
   const [deleteToken, setDeleteToken] = useState<string | null>(null);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
-  function getToken() {
-    return typeof window !== 'undefined' ? sessionStorage.getItem('access_token') : null;
-  }
-
   useEffect(() => {
     async function fetchStatus() {
-      const token = getToken();
-      const res = await fetch('/api/v1/lgpd/export', {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      const res = await apiFetch('/api/v1/lgpd/export', {
       });
       if (res.ok) {
         const data = await res.json() as { data: ExportStatus };
@@ -41,10 +36,8 @@ export default function PrivacyPage() {
     setExportLoading(true);
     setMessage(null);
     try {
-      const token = getToken();
-      const res = await fetch('/api/v1/lgpd/export', {
+      const res = await apiFetch('/api/v1/lgpd/export', {
         method: 'POST',
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
       const data = await res.json() as { data: { job_id: string; message: string } };
       if (res.ok) {
@@ -64,10 +57,8 @@ export default function PrivacyPage() {
     setDeleteLoading(true);
     setMessage(null);
     try {
-      const token = getToken();
-      const res = await fetch('/api/v1/lgpd/delete', {
+      const res = await apiFetch('/api/v1/lgpd/delete', {
         method: 'POST',
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
       const data = await res.json() as {
         data: { cancellation_token: string; grace_period_ends_at: string; message: string };

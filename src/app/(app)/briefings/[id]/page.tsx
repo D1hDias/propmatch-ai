@@ -11,6 +11,7 @@ import { SearchResults } from '@/components/search/SearchResults';
 import { GuestArchiveBanner } from '@/components/clients/GuestArchiveBanner';
 import { Button } from '@/components/ui/button';
 import type { ExtractedCriteria } from '@/server/briefings/extract';
+import { apiFetch } from '@/lib/api-fetch';
 
 interface BriefingDetail {
   id: string;
@@ -32,11 +33,9 @@ export default function BriefingDetailPage({ params }: Props) {
   const { id } = use(params);
   const [briefing, setBriefing] = useState<BriefingDetail | null | undefined>(undefined);
 
+  // Initial fetch
   useEffect(() => {
-    const token = sessionStorage.getItem('access_token');
-    fetch(`/api/v1/briefings/${id}`, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    })
+    apiFetch(`/api/v1/briefings/${id}`)
       .then((r) => {
         if (r.status === 404) { setBriefing(null); return null; }
         if (!r.ok) throw new Error('fetch failed');
@@ -45,6 +44,20 @@ export default function BriefingDetailPage({ params }: Props) {
       .then((d) => { if (d !== null) setBriefing(d as BriefingDetail); })
       .catch(() => setBriefing(null));
   }, [id]);
+
+  // Poll while extraction is in progress so the search section appears automatically
+  useEffect(() => {
+    if (briefing?.status !== 'extracting') return;
+    const interval = setInterval(async () => {
+      try {
+        const r = await apiFetch(`/api/v1/briefings/${id}`);
+        if (!r.ok) return;
+        const d = (await r.json()) as BriefingDetail;
+        setBriefing(d);
+      } catch { /* ignore */ }
+    }, 2000);
+    return () => clearInterval(interval);
+  }, [id, briefing?.status]);
 
   if (briefing === undefined) {
     return (
@@ -93,7 +106,11 @@ export default function BriefingDetailPage({ params }: Props) {
 
       {/* Extraction result */}
       <div className="bg-card rounded-xl shadow-card p-6 lg:p-8">
-        <ExtractionResult briefingId={id} initialData={briefing} />
+        <ExtractionResult
+          briefingId={id}
+          initialData={briefing}
+          onUpdate={(updated) => setBriefing((prev) => prev ? { ...prev, ...updated } : prev)}
+        />
       </div>
 
       {/* Search section */}
@@ -101,7 +118,7 @@ export default function BriefingDetailPage({ params }: Props) {
         <section className="space-y-4">
           <div className="flex items-center justify-between">
             <h2 className="text-lg font-semibold">Imóveis encontrados</h2>
-            {!isSearching && !isReady && (
+            {!isSearching && (
               <SearchTrigger briefingId={id} />
             )}
           </div>
