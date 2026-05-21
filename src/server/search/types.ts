@@ -6,6 +6,8 @@ import 'server-only';
 
 export interface SearchCriteria {
   city: string;
+  /** State abbreviation inferred from city/neighborhoods (e.g. "SP", "RJ"). */
+  state?: string;
   /** Primary neighborhood (used for URL construction). */
   neighborhood?: string | null;
   /** All requested neighborhoods — listing matches if it's in ANY of them. */
@@ -25,6 +27,10 @@ export interface SearchCriteria {
   amenities?: string[];
   /** Free-text notes that describe desirable details. Searched in listing descriptions. */
   notes?: string;
+  /** Whether proximity to metro/subway was requested. */
+  nearMetro?: boolean | null;
+  /** Urgency inferred from the briefing text. */
+  urgency?: 'low' | 'medium' | 'high' | null;
   purpose: 'buy' | 'rent';
 }
 

@@ -80,8 +80,8 @@ export default function ProfilePage() {
 
         {loadingUser ? (
           <div className="space-y-4">
-            <div className="h-10 bg-muted rounded animate-pulse" />
-            <div className="h-10 bg-muted rounded animate-pulse" />
+            <div className="h-10 bg-skeleton rounded animate-pulse" />
+            <div className="h-10 bg-skeleton rounded animate-pulse" />
           </div>
         ) : (
           <form onSubmit={handleSubmit(onSubmit)} className="space-y-5">

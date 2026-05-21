@@ -30,6 +30,7 @@
     /* ── Neutral ─────────────────────────────────────────────── */
     --muted:               210 17% 95%;      /* #f0f1f5 */
     --muted-foreground:    246 13% 59%;      /* #89879f */
+    --skeleton:            210 14% 83%;      /* #d2d4da — skeleton blocks */
 
     --accent:              234 97% 54%;      /* same as primary */
     --accent-foreground:   0 0% 100%;
@@ -72,6 +73,7 @@
 
     --muted:               226 22% 20%;
     --muted-foreground:    215 20% 65%;
+    --skeleton:            226 22% 28%;      /* skeleton blocks dark mode */
 
     --accent:              226 22% 20%;
     --accent-foreground:   0 0% 100%;

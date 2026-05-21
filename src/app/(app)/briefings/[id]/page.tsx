@@ -45,9 +45,9 @@ export default function BriefingDetailPage({ params }: Props) {
       .catch(() => setBriefing(null));
   }, [id]);
 
-  // Poll while extraction is in progress so the search section appears automatically
+  // Poll while extraction or search is in progress
   useEffect(() => {
-    if (briefing?.status !== 'extracting') return;
+    if (briefing?.status !== 'extracting' && briefing?.status !== 'searching') return;
     const interval = setInterval(async () => {
       try {
         const r = await apiFetch(`/api/v1/briefings/${id}`);
@@ -61,10 +61,10 @@ export default function BriefingDetailPage({ params }: Props) {
 
   if (briefing === undefined) {
     return (
-      <div className="max-w-5xl mx-auto space-y-6">
-        <div className="h-8 w-48 bg-muted rounded animate-pulse" />
-        <div className="h-48 bg-muted rounded-xl animate-pulse" />
-        <div className="h-64 bg-muted rounded-xl animate-pulse" />
+      <div className="max-w-[1600px] mx-auto space-y-6">
+        <div className="h-8 w-48 bg-skeleton rounded animate-pulse" />
+        <div className="h-48 bg-skeleton rounded-xl animate-pulse" />
+        <div className="h-64 bg-skeleton rounded-xl animate-pulse" />
       </div>
     );
   }
@@ -73,10 +73,11 @@ export default function BriefingDetailPage({ params }: Props) {
 
   const isReady = briefing.status === 'ready';
   const isSearching = briefing.status === 'searching';
+  const isFailed = briefing.status === 'failed';
   const client = briefing.client;
 
   return (
-    <div className="max-w-5xl mx-auto space-y-8">
+    <div className="max-w-[1600px] mx-auto space-y-8">
       {/* Breadcrumb / nav */}
       <div className="flex items-center justify-between">
         <Link
@@ -122,7 +123,7 @@ export default function BriefingDetailPage({ params }: Props) {
               <SearchTrigger briefingId={id} />
             )}
           </div>
-          {(isSearching || isReady) && <SearchResults briefingId={id} />}
+          {(isSearching || isReady || isFailed) && <SearchResults briefingId={id} />}
         </section>
       )}
     </div>

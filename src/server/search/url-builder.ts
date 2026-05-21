@@ -34,8 +34,14 @@ export function buildZapUrl(criteria: SearchCriteria): string {
   const transacao = criteria.purpose === 'rent' ? 'aluguel' : 'venda';
 
   const params = new URLSearchParams();
-  // Neighborhood must be a query param — path-based neighborhood slugs return 404 on ZAP
-  if (criteria.neighborhood) params.set('bairros', slugify(criteria.neighborhood));
+  // ZAP accepts multiple neighborhoods as comma-separated slugs in the bairros param.
+  // Prefer the full neighborhoods array; fall back to the singular neighborhood field.
+  const zapBairros = criteria.neighborhoods?.length
+    ? criteria.neighborhoods
+    : criteria.neighborhood
+      ? [criteria.neighborhood]
+      : [];
+  if (zapBairros.length > 0) params.set('bairros', zapBairros.map(slugify).join(','));
   if (criteria.bedroomsMin) params.set('quartos', String(criteria.bedroomsMin));
   if (criteria.priceMax) params.set('precomaximo', String(criteria.priceMax));
   if (criteria.priceMin) params.set('precominimo', String(criteria.priceMin));
@@ -54,8 +60,13 @@ export function buildVivaRealUrl(criteria: SearchCriteria): string {
   const transacao = criteria.purpose === 'rent' ? 'aluguel' : 'venda';
 
   const params = new URLSearchParams();
-  // Neighborhood must be a query param — path-based neighborhood slugs return 404 on VivaReal
-  if (criteria.neighborhood) params.set('bairros', slugify(criteria.neighborhood));
+  // VivaReal accepts multiple neighborhoods as comma-separated slugs in the bairros param.
+  const vivarealBairros = criteria.neighborhoods?.length
+    ? criteria.neighborhoods
+    : criteria.neighborhood
+      ? [criteria.neighborhood]
+      : [];
+  if (vivarealBairros.length > 0) params.set('bairros', vivarealBairros.map(slugify).join(','));
   if (criteria.bedroomsMin) params.set('quartos', String(criteria.bedroomsMin));
   if (criteria.priceMax) params.set('precoMaximo', String(criteria.priceMax));
   if (criteria.priceMin) params.set('precoMinimo', String(criteria.priceMin));

@@ -1,11 +1,22 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { PropertyCard, type PropertyCardData } from './PropertyCard';
+import { PropertyCard, PropertyCardSkeleton, type PropertyCardData } from './PropertyCard';
 import { WidenProposals, type WidenProposal } from './WidenProposals';
 import { SearchFilters, applyFilters, type FilterState } from './SearchFilters';
 import { WhatsAppMessageModal } from '@/components/messaging/WhatsAppMessageModal';
 import { getFreshToken } from '@/lib/api-fetch';
+
+const LOADING_MESSAGES = [
+  'Estamos vasculhando os parceiros em busca do imóvel ideal…',
+  'Analisando os imóveis disponíveis na região…',
+  'Filtrando as melhores opções dentro do seu orçamento…',
+  'Cruzando localização, preço e características solicitadas…',
+  'Quase lá — verificando os últimos detalhes de cada imóvel…',
+  'Buscando com precisão tudo que foi solicitado…',
+  'Comparando preços e condições para trazer o melhor resultado…',
+  'Conferindo disponibilidade e dados de cada anúncio…',
+];
 
 interface SearchResultsProps {
   briefingId: string;
@@ -27,6 +38,7 @@ export function SearchResults({ briefingId }: SearchResultsProps) {
   const [total, setTotal] = useState<number | null>(null);
   const [widenProposals, setWidenProposals] = useState<WidenProposal[]>([]);
   const [customUrlResults, setCustomUrlResults] = useState<CustomUrlResult[]>([]);
+  const [belowThresholdCount, setBelowThresholdCount] = useState<number>(0);
   const [filters, setFilters] = useState<FilterState>({
     sort: 'score',
     bedroomsMin: null,
@@ -35,8 +47,21 @@ export function SearchResults({ briefingId }: SearchResultsProps) {
   });
   // Incremented when auto-widen is applied — triggers SSE reconnect via useEffect dependency
   const [searchEpoch, setSearchEpoch] = useState(0);
+  const [visibleCount, setVisibleCount] = useState(10);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [showModal, setShowModal] = useState(false);
+  const [loadingMsgIndex, setLoadingMsgIndex] = useState(0);
   const eventSourceRef = useRef<EventSource | null>(null);
+
+  // Cycle through loading messages every 4 s while searching with no results yet
+  useEffect(() => {
+    if (state !== 'searching' && state !== 'connecting') return;
+    if (listings.length > 0) return;
+    const id = setInterval(() => {
+      setLoadingMsgIndex((i) => (i + 1) % LOADING_MESSAGES.length);
+    }, 4000);
+    return () => clearInterval(id);
+  }, [state, listings.length]);
 
   useEffect(() => {
     let es: EventSource | null = null;
@@ -64,10 +89,11 @@ export function SearchResults({ briefingId }: SearchResultsProps) {
       });
 
       es.addEventListener('search_complete', (e) => {
-        const data = JSON.parse(e.data) as { total: number; widenProposals?: WidenProposal[]; customUrlResults?: CustomUrlResult[] };
+        const data = JSON.parse(e.data) as { total: number; widenProposals?: WidenProposal[]; customUrlResults?: CustomUrlResult[]; belowThresholdCount?: number };
         setTotal(data.total);
         setWidenProposals(data.widenProposals ?? []);
         setCustomUrlResults(data.customUrlResults ?? []);
+        setBelowThresholdCount(data.belowThresholdCount ?? 0);
         setState('done');
         es!.close();
       });
@@ -91,7 +117,7 @@ export function SearchResults({ briefingId }: SearchResultsProps) {
       es?.close();
       eventSourceRef.current = null;
     };
-  }, [briefingId, searchEpoch]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [briefingId, searchEpoch]);
 
   function toggleSelect(id: string) {
     setSelected((prev) => {
@@ -108,34 +134,94 @@ export function SearchResults({ briefingId }: SearchResultsProps) {
     setTotal(null);
     setWidenProposals([]);
     setCustomUrlResults([]);
+    setBelowThresholdCount(0);
     setFilters({ sort: 'score', bedroomsMin: null, priceMax: null, neighborhood: null });
+    setVisibleCount(10);
+    setIsLoadingMore(false);
     setState('connecting');
     setSearchEpoch((e) => e + 1); // reconnects EventSource
   }
 
+  function handleLoadMore(remaining: number) {
+    setIsLoadingMore(true);
+    setTimeout(() => {
+      setVisibleCount((c) => c + 10);
+      setIsLoadingMore(false);
+    }, 380);
+    void remaining; // used by caller for skeleton count
+  }
+
   if (state === 'connecting' || state === 'searching') {
+    const arrived = listings.length;
+
+    // No results yet — spinner + rotating message + skeletons
+    if (arrived === 0) {
+      return (
+        <div className="space-y-4">
+          <div className="flex items-center gap-3 rounded-xl border border-border bg-card p-4">
+            <div className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+            <p
+              key={loadingMsgIndex}
+              className="text-sm text-muted-foreground animate-fade-in-up"
+            >
+              {state === 'connecting' ? 'Conectando…' : LOADING_MESSAGES[loadingMsgIndex]}
+            </p>
+          </div>
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <PropertyCardSkeleton key={`sk-${i}`} />
+            ))}
+          </div>
+        </div>
+      );
+    }
+
+    // Results arriving — show paginated cards + subtle "still searching" banner
+    const visibleSearchSlice = listings.slice(0, visibleCount);
+    const searchRemaining = arrived - visibleCount;
+
     return (
       <div className="space-y-4">
-        {/* Progress indicator */}
-        <div className="flex items-center gap-3 rounded-xl border border-border bg-card p-4">
-          <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-          <p className="text-sm text-muted-foreground">
-            {state === 'connecting' ? 'Conectando…' : `Buscando imóveis${listings.length > 0 ? ` — ${listings.length} encontrados` : '…'}`}
+        {/* Subtle "still loading" banner */}
+        <div className="flex items-center gap-3 rounded-xl border border-primary/20 bg-primary/5 px-4 py-3">
+          <div className="h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+          <p
+            key={loadingMsgIndex}
+            className="text-sm text-primary/80 animate-fade-in-up"
+          >
+            {LOADING_MESSAGES[loadingMsgIndex]}
           </p>
         </div>
 
-        {/* Render results as they arrive */}
-        {listings.length > 0 && (
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {listings.map((p, i) => (
-              <div key={p.id} className="animate-fade-in-up" style={{ animationDelay: `${Math.min(i * 40, 400)}ms` }}>
-                <PropertyCard
-                  property={p}
-                  selected={selected.has(p.id)}
-                  onToggleSelect={toggleSelect}
-                />
-              </div>
-            ))}
+        <div className="flex items-center justify-between">
+          <p className="text-sm text-muted-foreground">
+            {arrived} imóveis encontrados até agora
+          </p>
+        </div>
+
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
+          {visibleSearchSlice.map((p, i) => (
+            <div key={p.id} className="animate-fade-in-up" style={{ animationDelay: `${Math.min(i * 40, 400)}ms` }}>
+              <PropertyCard
+                property={p}
+                selected={selected.has(p.id)}
+                onToggleSelect={toggleSelect}
+              />
+            </div>
+          ))}
+          {isLoadingMore && Array.from({ length: Math.min(searchRemaining, 10) }).map((_, i) => (
+            <PropertyCardSkeleton key={`lm-${i}`} />
+          ))}
+        </div>
+
+        {searchRemaining > 0 && !isLoadingMore && (
+          <div className="flex justify-center pt-2">
+            <button
+              onClick={() => handleLoadMore(searchRemaining)}
+              className="rounded-xl border border-border bg-card px-8 py-3 text-sm font-semibold text-foreground shadow-sm hover:bg-muted hover:border-primary/40 active:scale-95 transition-all"
+            >
+              Ver mais
+            </button>
           </div>
         )}
       </div>
@@ -159,6 +245,9 @@ export function SearchResults({ briefingId }: SearchResultsProps) {
 
   // done
   const visible = applyFilters(listings, filters);
+  const visibleSlice = visible.slice(0, visibleCount);
+  const remaining = visible.length - visibleCount;
+  const nextBatch = Math.min(remaining, 10);
 
   return (
     <div className="space-y-4">
@@ -199,7 +288,11 @@ export function SearchResults({ briefingId }: SearchResultsProps) {
 
       {/* Filters + sort */}
       {listings.length > 1 && (
-        <SearchFilters listings={listings} filters={filters} onChange={setFilters} />
+        <SearchFilters
+          listings={listings}
+          filters={filters}
+          onChange={(f) => { setFilters(f); setVisibleCount(10); }}
+        />
       )}
 
       {/* Summary bar */}
@@ -235,16 +328,57 @@ export function SearchResults({ briefingId }: SearchResultsProps) {
           )}
         </div>
       ) : (
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {visible.map((p, i) => (
-            <div key={p.id} className="animate-fade-in-up" style={{ animationDelay: `${Math.min(i * 40, 400)}ms` }}>
-              <PropertyCard
-                property={p}
-                selected={selected.has(p.id)}
-                onToggleSelect={toggleSelect}
-              />
+        <>
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
+            {visibleSlice.map((p, i) => (
+              <div key={p.id} className="animate-fade-in-up" style={{ animationDelay: `${Math.min(i * 40, 400)}ms` }}>
+                <PropertyCard
+                  property={p}
+                  selected={selected.has(p.id)}
+                  onToggleSelect={toggleSelect}
+                />
+              </div>
+            ))}
+            {isLoadingMore &&
+              Array.from({ length: nextBatch }).map((_, i) => (
+                <PropertyCardSkeleton key={`lm-${i}`} />
+              ))
+            }
+          </div>
+
+          {remaining > 0 && !isLoadingMore && (
+            <div className="flex justify-center pt-2">
+              <button
+                onClick={() => handleLoadMore(remaining)}
+                className="rounded-xl border border-border bg-card px-8 py-3 text-sm font-semibold text-foreground shadow-sm hover:bg-muted hover:border-primary/40 active:scale-95 transition-all"
+              >
+                Ver mais
+              </button>
             </div>
-          ))}
+          )}
+
+          {isLoadingMore && (
+            <div className="flex justify-center pt-2">
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <div className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+                Carregando…
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* Below-threshold notice */}
+      {belowThresholdCount > 0 && listings.length > 0 && (
+        <div className="rounded-xl border border-[#FF9F00]/30 bg-[#FF9F00]/5 px-4 py-3 flex items-start gap-3">
+          <span className="mt-0.5 h-2 w-2 flex-shrink-0 rounded-full bg-[#FF9F00]" />
+          <p className="text-sm text-muted-foreground">
+            Encontramos mais{' '}
+            <span className="font-medium text-foreground">
+              {belowThresholdCount} {belowThresholdCount === 1 ? 'imóvel' : 'imóveis'}
+            </span>{' '}
+            com pontuação abaixo de 60%. Não os trouxemos nos resultados para aumentar sua efetividade nas negociações.
+          </p>
         </div>
       )}
 

@@ -25,11 +25,21 @@ const SORT_OPTIONS: { value: SortKey; label: string }[] = [
   { value: 'area_desc', label: 'Maior área' },
 ];
 
+function normNeighborhood(s: string): string {
+  return s.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim();
+}
+
 export function SearchFilters({ listings, filters, onChange }: SearchFiltersProps) {
-  // Derive filter options from current listings
-  const neighborhoods = Array.from(
-    new Set(listings.map((l) => l.neighborhood).filter(Boolean) as string[]),
-  ).sort();
+  // Derive filter options — deduplicate neighborhoods by normalized name (case/accent-insensitive)
+  const neighMap = new Map<string, string>();
+  for (const l of listings) {
+    if (!l.neighborhood) continue;
+    const key = normNeighborhood(l.neighborhood);
+    if (!neighMap.has(key)) neighMap.set(key, l.neighborhood);
+  }
+  const neighborhoods = [...neighMap.values()].sort((a, b) =>
+    normNeighborhood(a).localeCompare(normNeighborhood(b)),
+  );
 
   const bedroomCounts = Array.from(
     new Set(listings.map((l) => l.bedrooms).filter((b): b is number => b !== null)),
@@ -141,7 +151,8 @@ export function applyFilters(listings: PropertyCardData[], filters: FilterState)
   }
 
   if (filters.neighborhood) {
-    result = result.filter((l) => l.neighborhood === filters.neighborhood);
+    const normTarget = normNeighborhood(filters.neighborhood);
+    result = result.filter((l) => l.neighborhood && normNeighborhood(l.neighborhood) === normTarget);
   }
 
   // Sort

@@ -1,7 +1,6 @@
 import 'server-only';
 import { logger } from '@/server/lib/logger';
 import { scrapeWithFirecrawl } from '../firecrawl-scraper';
-import { scrapeWithPlaywright } from '../playwright-scraper';
 import { buildVivaRealUrl } from '../url-builder';
 import type { HealthStatus, NormalizedListing, SearchCriteria, SourceAdapter } from '../types';
 
@@ -29,21 +28,10 @@ export const vivarealAdapter: SourceAdapter = {
       const listings = await scrapeWithFirecrawl(url, 'vivareal', criteria);
       recordResult(true);
       return listings;
-    } catch (firecrawlErr) {
-      logger.warn('vivareal firecrawl failed — falling back to playwright', {
-        error: firecrawlErr,
-        url,
-      });
-
-      try {
-        const listings = await scrapeWithPlaywright(url, 'vivareal', criteria);
-        recordResult(listings.length > 0);
-        return listings;
-      } catch (playwrightErr) {
-        recordResult(false);
-        logger.error('vivareal playwright fallback failed', { error: playwrightErr, url });
-        return [];
-      }
+    } catch (err) {
+      recordResult(false);
+      logger.error('vivareal firecrawl failed', { error: err, url });
+      return [];
     }
   },
 

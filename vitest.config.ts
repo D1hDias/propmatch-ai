@@ -16,7 +16,7 @@ export default defineConfig({
       },
       exclude: ['node_modules', '.next', 'tests', '**/*.config.*', 'src/app/layout.tsx'],
     },
-    exclude: ['node_modules', '.next', 'tests/e2e/**', 'tests/load/**'],
+    exclude: ['node_modules', '.next', 'tests/e2e/**', 'tests/integration/**', 'tests/load/**'],
   },
   resolve: {
     alias: {

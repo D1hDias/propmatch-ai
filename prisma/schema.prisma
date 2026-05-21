@@ -8,6 +8,7 @@
 // Sprint 4 (DATA-3):  briefing_results
 // Sprint 5 (DATA-4):  clients + briefings.client_id constraint
 // Sprint 6 (DATA-6):  messages
+// Sprint 7 (DATA-7):  partner_sites + property unique constraint
 
 generator client {
   provider = "prisma-client-js"
@@ -126,6 +127,7 @@ model User {
   refreshTokens  RefreshToken[]
   briefings      Briefing[]
   clients        Client[]
+  partnerSites   PartnerSite[]
 
   @@index([agencyId])
   @@map("users")
@@ -326,6 +328,9 @@ model Property {
   sources            PropertySource_[]  @relation("PropertySources")
   briefingResults    BriefingResult[]
 
+  // No unique constraint — dedup is done at service level (findFirst → update-or-create)
+  // to avoid false merges between units in the same building sharing the same geohash7.
+  @@index([geohash7, addressNormalized])
   @@index([geohash7])
   @@index([city, neighborhood])
   @@index([price])
@@ -349,11 +354,16 @@ model PropertySource_ {
   rawData             Json?          @map("raw_data") @db.JsonB // full raw payload
   scrapedAt           DateTime       @default(now()) @map("scraped_at") @db.Timestamptz
 
+  // DATA-8: FK to partner site that produced this source row (nullable for ZAP/VivaReal)
+  partnerSiteId       String?        @map("partner_site_id") @db.Uuid
+  partnerSite         PartnerSite?   @relation("PartnerSiteSources", fields: [partnerSiteId], references: [id], onDelete: SetNull)
+
   property            Property       @relation("PropertySources", fields: [propertyId], references: [id], onDelete: Cascade)
 
   @@unique([source, externalId])
   @@index([propertyId])
   @@index([source, scrapedAt(sort: Desc)])
+  @@index([partnerSiteId])
   @@map("property_sources")
 }
 
@@ -439,6 +449,88 @@ model ShortLink {
 
   @@index([messageId])
   @@map("short_links")
+}
+
+// ---------------------------------------------------------------------------
+// Sprint 7 tables — DATA-7
+// ---------------------------------------------------------------------------
+
+// DATA-7: Persistent partner imobiliária site profiles.
+// Stores scraping strategy and URL patterns discovered via Firecrawl MAP.
+// Avoids re-discovering the same site profile on every briefing.
+model PartnerSite {
+  id                  String    @id @default(uuid()) @db.Uuid
+  // Nullable: tracks who added the site to the platform, but sites are a shared platform asset.
+  userId              String?   @map("user_id") @db.Uuid
+  domain              String    // e.g. "www.melhorimovel.com.br"
+  baseUrl             String    @map("base_url") // e.g. "https://www.melhorimovel.com.br"
+  name                String
+
+  // Scraping strategy: "map_then_scrape" | "crawl" | "direct_scrape" | "interact"
+  discoveryStrategy   String    @default("map_then_scrape") @map("discovery_strategy")
+
+  // URL patterns detected via Firecrawl MAP
+  propertyUrlPatterns String[]  @default([]) @map("property_url_patterns")
+  listingUrlPatterns  String[]  @default([]) @map("listing_url_patterns")
+
+  // Site-specific search configuration (JSON). Enables smart filtered search:
+  // { type: "karioca_api" | "markers_extract", ... }
+  // See src/server/search/site-scraper.ts for supported shapes.
+  searchConfig        Json?     @map("search_config")
+
+  // Concrete search-result URLs provided by the broker (e.g. pre-filtered pages).
+  // Used as entry points by the scraping strategy instead of base_url.
+  seedUrls            String[]  @default([]) @map("seed_urls")
+  // Last entry URLs computed and used by a search run (diagnostic, updated by worker).
+  searchEntryUrls     String[]  @default([]) @map("search_entry_urls")
+
+  // Firecrawl crawl configuration
+  includePaths        String[]  @default([]) @map("include_paths")
+  excludePaths        String[]  @default([]) @map("exclude_paths")
+  crawlDepthDefault   Int       @default(2) @map("crawl_depth_default")
+  crawlLimitDefault   Int       @default(60) @map("crawl_limit_default")
+  ignoreQueryParams   Boolean   @default(false) @map("ignore_query_params")
+
+  // Technical flags detected during discovery
+  needsInteract       Boolean   @default(false) @map("needs_interact")
+  needsJavascript     Boolean   @default(false) @map("needs_javascript")
+  usesSitemap         Boolean   @default(false) @map("uses_sitemap")
+
+  // When true, discoverPartnerSite() will not overwrite URL patterns.
+  // Allows the broker to fix patterns manually without auto-discovery resetting them.
+  profileLocked       Boolean   @default(false) @map("profile_locked")
+
+  active              Boolean   @default(true)
+  notes               String?
+  lastDiscoveredAt    DateTime? @map("last_discovered_at") @db.Timestamptz
+  lastScrapedAt       DateTime? @map("last_scraped_at") @db.Timestamptz
+
+  // Periodic sync control (DATA-8)
+  syncIntervalDays    Int       @default(7) @map("sync_interval_days")
+  listingCount        Int       @default(0) @map("listing_count")
+  // idle | running | done | error
+  syncStatus          String    @default("idle") @map("sync_status")
+  // Cumulative search count — used to auto-adjust syncIntervalDays (more demand = shorter TTL)
+  searchCount         Int       @default(0) @map("search_count")
+
+  // Operational health
+  lastSuccessAt       DateTime? @map("last_success_at") @db.Timestamptz
+  lastErrorAt         DateTime? @map("last_error_at") @db.Timestamptz
+  // Scraping is skipped when consecutiveFailures >= 5 (circuit-breaker).
+  consecutiveFailures Int       @default(0) @map("consecutive_failures")
+  // Set at the start of discoverPartnerSite(), cleared at the end.
+  // Prevents concurrent discovery runs on the same site.
+  discoveryLockedAt   DateTime? @map("discovery_locked_at") @db.Timestamptz
+
+  createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt           DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  user                User?     @relation(fields: [userId], references: [id])
+  propertySources     PropertySource_[] @relation("PartnerSiteSources")
+
+  @@unique([domain])
+  @@index([active])
+  @@map("partner_sites")
 }
 
 // AUTH-1: Compliance and security audit trail (24-month legal retention)

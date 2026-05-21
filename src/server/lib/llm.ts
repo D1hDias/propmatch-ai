@@ -62,29 +62,47 @@ async function withRetry<T>(
 }
 
 // ---------------------------------------------------------------------------
-// Public interface (unchanged — callers don't need to be updated)
+// Public interface
 // ---------------------------------------------------------------------------
 
-export interface AnthropicRequestOptions {
+export interface LLMRequestOptions {
   system?: string;
   prompt?: string;
   messages?: Array<{ role: 'user' | 'assistant'; content: string }>;
-  /** OpenRouter model string, e.g. "anthropic/claude-haiku-4-5" or "google/gemini-flash-1.5" */
-  model?: string;
+  /** OpenRouter model ID — see src/server/lib/models.ts for the full registry. */
+  model: string;
   maxTokens?: number;
   max_tokens?: number;
   timeoutMs?: number;
   maxAttempts?: number;
+  /**
+   * JSON Schema object for structured output (OpenRouter json_schema mode).
+   * When provided, takes precedence over jsonMode.
+   * The model will strictly follow this schema — no prefix text, no markdown.
+   */
+  responseSchema?: object;
   /** When true, instructs the model to respond with valid JSON only (json_object mode). */
   jsonMode?: boolean;
 }
 
-export interface AnthropicResponse {
+export interface LLMResponse {
   content: Array<{ type: 'text'; text: string }>;
   inputTokens: number;
   outputTokens: number;
   durationMs: number;
+  /** The model ID that was actually used (for logging). */
+  model: string;
 }
+
+// ---------------------------------------------------------------------------
+// Backwards-compat aliases (callers using the old interface names still compile)
+// ---------------------------------------------------------------------------
+export type AnthropicRequestOptions = LLMRequestOptions;
+export type AnthropicResponse = LLMResponse;
+
+// ---------------------------------------------------------------------------
+// OpenRouter client (singleton)
+// ---------------------------------------------------------------------------
 
 let _client: OpenAI | null = null;
 
@@ -104,19 +122,17 @@ function getClient(): OpenAI {
   return _client;
 }
 
-// Default model — barato e rápido para extração/parsing
-const DEFAULT_MODEL = 'anthropic/claude-haiku-4-5';
-
-export async function callAnthropic(opts: AnthropicRequestOptions): Promise<AnthropicResponse> {
+export async function callLLM(opts: LLMRequestOptions): Promise<LLMResponse> {
   const {
     system,
     prompt,
     messages: explicitMessages,
-    model = DEFAULT_MODEL,
+    model,
     maxTokens,
     max_tokens,
     timeoutMs = 15_000,
     maxAttempts = 3,
+    responseSchema,
     jsonMode = false,
   } = opts;
 
@@ -129,6 +145,18 @@ export async function callAnthropic(opts: AnthropicRequestOptions): Promise<Anth
   const allMessages: OpenAI.Chat.ChatCompletionMessageParam[] = system
     ? [{ role: 'system', content: system }, ...userMessages]
     : userMessages;
+
+  // Determine response_format: json_schema > json_object > none
+  let responseFormat: OpenAI.Chat.ChatCompletionCreateParams['response_format'];
+  if (responseSchema) {
+    responseFormat = {
+      type: 'json_schema' as const,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      json_schema: { name: 'output', strict: true, schema: responseSchema } as any,
+    };
+  } else if (jsonMode) {
+    responseFormat = { type: 'json_object' as const };
+  }
 
   if (isOpen()) {
     throw new Error('LLM circuit breaker is open — API temporarily unavailable');
@@ -148,7 +176,7 @@ export async function callAnthropic(opts: AnthropicRequestOptions): Promise<Anth
               model,
               max_tokens: resolvedMaxTokens,
               messages: allMessages,
-              ...(jsonMode ? { response_format: { type: 'json_object' as const } } : {}),
+              ...(responseFormat ? { response_format: responseFormat } : {}),
             },
             { signal: controller.signal },
           );
@@ -168,6 +196,7 @@ export async function callAnthropic(opts: AnthropicRequestOptions): Promise<Anth
       inputTokens: response.usage?.prompt_tokens ?? 0,
       outputTokens: response.usage?.completion_tokens ?? 0,
       durationMs: Date.now() - start,
+      model,
     };
   } catch (err) {
     recordFailure();

@@ -1,8 +1,8 @@
 import 'server-only';
 
 // ---------------------------------------------------------------------------
-// Central model registry — all LLM calls go through callAnthropic() in
-// anthropic.ts, which proxies OpenRouter. Change a model here to affect
+// Central model registry — all LLM calls go through callLLM() in
+// llm.ts, which proxies OpenRouter. Change a model here to affect
 // every call site that references it.
 //
 // OpenRouter model IDs: https://openrouter.ai/models
@@ -11,36 +11,42 @@ import 'server-only';
 
 export const MODELS = {
   /**
-   * Briefing extraction — converts free-form broker text to structured criteria.
-   * Needs strong Portuguese comprehension (slang, abbreviations, price shorthands).
-   * Called once per briefing → cost is not a bottleneck, quality matters more.
-   * Cost: ~$0.0005 per call (response ≈ 200 tokens).
+   * Briefing extraction — default model. Strong Portuguese comprehension
+   * (slang, abbreviations, price shorthands). json_schema strict supported.
+   * Called once per briefing → cost matters less than quality.
    */
-  briefingExtraction: 'google/gemini-2.5-flash',
+  briefingExtraction: 'google/gemini-2.5-flash-lite',
 
   /**
-   * Amenity classification — reads property description, returns boolean flags
-   * for a fixed set of 26 amenities. Trivial classification task, runs once per
-   * scraped listing → cost accumulates fast.
-   * Cost: $0.075/$0.30 per M tokens — 15× cheaper than claude-haiku-4.5.
+   * Briefing extraction — fallback. Triggered when the default model returns
+   * confidence < 0.65 or is missing critical fields (city, bedrooms, price).
+   * GPT-4.1 Mini has reliable structured output and strong instruction-following.
    */
-  amenityExtraction: 'google/gemini-2.0-flash-lite-001',
+  briefingExtractionFallback: 'openai/gpt-4.1-mini',
 
   /**
-   * Listing extraction from page markdown — used by Firecrawl scraper to extract
-   * structured property data from the markdown of a scraped real estate page.
-   * Using our own LLM here (instead of Firecrawl's internal LLM) gives full
-   * control over price accuracy and filtering quality.
-   * Needs large context (page markdown can be 30–80K tokens).
+   * Amenity classification and semantic enrichment — reads property description,
+   * returns boolean flags for a fixed set of fields. Runs once per scraped
+   * listing → cost accumulates fast. GPT-4.1 Nano is OpenRouter's cheapest
+   * capable model for this trivial classification task.
    */
-  listingExtraction: 'google/gemini-2.0-flash-001',
+  amenityExtraction: 'openai/gpt-4.1-nano',
 
   /**
-   * Playwright fallback parser — converts raw page text to structured listings
-   * JSON. Only runs when Firecrawl is unavailable/exhausted.
-   * Needs 1M context (page text can be large) and good structured extraction.
+   * Listing matcher — cross-references the broker's briefing text with the
+   * scraped listings and returns a compatibility score + reason per listing.
+   * Gemini Flash is fast, cheap, and handles long JSON payloads well.
    */
-  playwrightParser: 'google/gemini-2.0-flash-001',
+  listingMatcher: 'google/gemini-2.5-flash-lite',
+
+  /**
+   * Listing data extraction during inventory sync.
+   * Reads the markdown of a scraped listing page and returns structured JSON.
+   * Runs once per new listing URL — cheapest capable model is appropriate.
+   * gpt-4.1-nano: ~$0.10/1M input tokens → ~$0.0003/listing.
+   */
+  listingSync: 'openai/gpt-4.1-nano',
+
 } as const;
 
 export type ModelKey = keyof typeof MODELS;

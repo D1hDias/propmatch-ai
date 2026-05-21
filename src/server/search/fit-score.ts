@@ -156,12 +156,18 @@ export function fitScore(listing: NormalizedListing, criteria: SearchCriteria): 
   }
 
   // 4. Price — active ONLY when priceMax or priceMin was explicitly provided.
-  //    No price in the briefing means the broker does not want it to affect scoring.
+  //    Hard fail (score = 0, listing excluded) when price > priceMax * 1.2.
+  //    The 20% tolerance is the agreed ceiling — anything beyond is simply out of budget.
   if ((criteria.priceMax != null || criteria.priceMin != null) && listing.price > 0) {
+    if (criteria.priceMax != null && listing.price > criteria.priceMax * 1.2) {
+      // Hard exclude — return immediately with score 0 so callers can filter it out.
+      return { listing, score: 0, scoreBreakdown: { priceHardFail: 0 } };
+    }
     possible += W.price;
     if (criteria.priceMax != null && listing.price > criteria.priceMax) {
+      // Within tolerance (0–20% over): linear penalty
       const overBy = (listing.price - criteria.priceMax) / criteria.priceMax;
-      breakdown.price = overBy > 0.2 ? 0 : Math.round(W.price * (1 - overBy / 0.2));
+      breakdown.price = Math.round(W.price * (1 - overBy / 0.2));
     } else if (criteria.priceMin != null && listing.price < criteria.priceMin) {
       breakdown.price = Math.round(W.price * 0.7); // under min — likely different product tier
     } else {

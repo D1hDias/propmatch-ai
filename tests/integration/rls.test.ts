@@ -52,9 +52,10 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await prisma.user.deleteMany({
-    where: { id: { in: [userAId, userBId] } },
-  });
+  const ids = [userAId, userBId].filter((id): id is string => Boolean(id));
+  if (ids.length > 0) {
+    await prisma.user.deleteMany({ where: { id: { in: ids } } });
+  }
   await prisma.$disconnect();
 });
 

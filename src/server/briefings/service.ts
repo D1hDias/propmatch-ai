@@ -4,7 +4,9 @@ import { extractBriefing } from './extract';
 import { toSearchCriteria } from './criteria-transform';
 import { hitlQueue } from './hitl-queue';
 import { searchQueue } from '@/server/search/queue';
+import { logger } from '@/server/lib/logger';
 import type { CreateBriefingInput } from '@/lib/schemas/briefing';
+import type { SearchCriteria } from '@/server/search/types';
 
 const CONFIDENCE_AUTO_APPROVE = 0.85;
 const CONFIDENCE_AUTO_APPROVE_WITH_OVERRIDE = 0.65;
@@ -28,17 +30,86 @@ export async function createBriefing(
       clientId,
       rawText: input.raw_text,
       rawTextPurgeAt: purgeAt,
-      selectedPortals: input.portals ?? ['zap', 'vivareal'],
+      selectedPortals: input.partner_site_ids ?? [],
       customUrls: input.custom_urls ?? [],
       status: 'extracting',
       reviewStatus: 'pending',
     },
   });
 
-  // Fire-and-forget extraction — does not block the HTTP response
-  void runExtraction(briefing.id, input.raw_text, briefing.selectedPortals, briefing.customUrls as string[]);
+  // When structured_criteria is provided (Categories tab), bypass LLM extraction
+  // and go directly to search — the user already specified all criteria explicitly.
+  if (input.structured_criteria) {
+    void runDirectSearch(briefing.id, input.structured_criteria, briefing.customUrls as string[], briefing.selectedPortals as string[]);
+  } else {
+    // Fire-and-forget extraction — does not block the HTTP response
+    void runExtraction(briefing.id, input.raw_text, briefing.customUrls as string[], briefing.selectedPortals as string[]);
+  }
 
   return briefing.id;
+}
+
+/**
+ * Direct search path for Categories tab — skips LLM extraction entirely.
+ * Maps the structured form criteria straight into a SearchCriteria and enqueues the job.
+ */
+async function runDirectSearch(
+  briefingId: string,
+  sc: NonNullable<CreateBriefingInput['structured_criteria']>,
+  customUrls: string[],
+  partnerSiteIds: string[],
+): Promise<void> {
+  try {
+    const criteria: SearchCriteria = {
+      purpose: sc.purpose === 'rent' ? 'rent' : 'buy',
+      city: sc.city ?? 'Rio de Janeiro',
+      state: 'RJ',
+      neighborhoods: sc.neighborhoods ?? [],
+      neighborhood: sc.neighborhoods?.[0] ?? null,
+      propertyType: sc.property_types?.[0] ?? null,
+      priceMin: sc.price_min ?? null,
+      priceMax: sc.price_max ?? null,
+      bedroomsMin: sc.bedrooms_min ?? null,
+      areaMin: sc.area_min ?? null,
+      areaMax: sc.area_max ?? null,
+      parkingMin: sc.parking_min ?? null,
+    };
+
+    const userId = (await prisma.briefing.findUniqueOrThrow({
+      where: { id: briefingId },
+      select: { userId: true },
+    })).userId;
+
+    await prisma.briefing.update({
+      where: { id: briefingId },
+      data: {
+        extractedCriteria: criteria as unknown as object,
+        extractionConfidence: 1.0,
+        reviewStatus: 'not_required',
+        reviewMode: 'auto_approved',
+        status: 'searching',
+      },
+    });
+
+    await searchQueue.add('search', {
+      briefingId,
+      userId,
+      criteria,
+      customUrls,
+      partnerSiteIds,
+    });
+
+    logger.info('briefing_direct_search_queued', { briefingId, neighborhoods: criteria.neighborhoods });
+  } catch (err) {
+    logger.error('briefing_direct_search_failed', {
+      briefingId,
+      error: err instanceof Error ? err : new Error(String(err)),
+    });
+    await prisma.briefing.update({
+      where: { id: briefingId },
+      data: { status: 'failed' },
+    });
+  }
 }
 
 /**
@@ -49,14 +120,25 @@ export async function createBriefing(
 async function runExtraction(
   briefingId: string,
   rawText: string,
-  portals: string[],
   customUrls: string[],
+  partnerSiteIds: string[] = [],
 ): Promise<void> {
   try {
     const result = await extractBriefing(rawText);
 
     const hasCritical = result.missingCriticalFields.length === 0;
     const confidence = result.confidence;
+
+    logger.info('briefing_extraction_complete', {
+      briefingId,
+      model: result.model,
+      fallbackUsed: result.fallbackUsed,
+      confidence,
+      missingCriticalFields: result.missingCriticalFields,
+      durationMs: result.durationMs,
+      city: result.criteria.location?.city,
+      neighborhoods: result.criteria.location?.neighborhoods,
+    });
 
     let reviewStatus: 'not_required' | 'pending' | 'approved';
     let reviewMode: 'auto_approved' | 'hitl' | null;
@@ -77,7 +159,7 @@ async function runExtraction(
       await prisma.briefing.update({
         where: { id: briefingId },
         data: {
-          extractedCriteria: toSearchCriteria(result.criteria) as object,
+          extractedCriteria: result.criteria as object,
           extractionConfidence: result.confidence,
           reviewStatus,
           reviewMode,
@@ -92,7 +174,7 @@ async function runExtraction(
       await prisma.briefing.update({
         where: { id: briefingId },
         data: {
-          extractedCriteria: toSearchCriteria(result.criteria) as object,
+          extractedCriteria: result.criteria as object,
           extractionConfidence: result.confidence,
           reviewStatus,
           reviewMode,
@@ -104,11 +186,16 @@ async function runExtraction(
         briefingId,
         userId: (await prisma.briefing.findUniqueOrThrow({ where: { id: briefingId }, select: { userId: true } })).userId,
         criteria: toSearchCriteria(result.criteria),
-        portals,
         customUrls,
+        partnerSiteIds,
       });
     }
-  } catch {
+  } catch (err) {
+    logger.error('briefing_extraction_failed', {
+      briefingId,
+      error: err instanceof Error ? err : new Error(String(err)),
+      message: err instanceof Error ? err.message : String(err),
+    });
     await prisma.briefing.update({
       where: { id: briefingId },
       data: { status: 'failed' },

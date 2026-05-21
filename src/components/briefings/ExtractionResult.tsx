@@ -69,7 +69,13 @@ function StatusBadge({ status, reviewStatus }: { status: string; reviewStatus: s
 
 function ConfidenceBar({ value }: { value: number }) {
   const pct = Math.round(value * 100);
-  const color = pct >= 85 ? 'bg-success' : pct >= 80 ? 'bg-warning' : 'bg-secondary';
+  const color = pct >= 85 ? 'bg-success' : pct >= 65 ? 'bg-warning' : 'bg-danger';
+  const label =
+    pct >= 85
+      ? 'Todos os critérios principais foram identificados.'
+      : pct >= 65
+        ? 'Critérios principais identificados; alguns detalhes não ficaram claros.'
+        : 'Poucos critérios identificados — aguardando revisão humana.';
   return (
     <div className="space-y-1">
       <div className="flex justify-between text-xs text-muted-foreground">
@@ -79,6 +85,7 @@ function ConfidenceBar({ value }: { value: number }) {
       <div className="h-2 bg-muted rounded-full overflow-hidden">
         <div className={`h-full rounded-full transition-all ${color}`} style={{ width: `${pct}%` }} />
       </div>
+      <p className="text-xs text-muted-foreground">{label}</p>
     </div>
   );
 }
@@ -88,35 +95,42 @@ function ConfidenceBar({ value }: { value: number }) {
 // ---------------------------------------------------------------------------
 
 function CriteriaGrid({ criteria }: { criteria: ExtractedCriteria }) {
+  const loc = criteria.location ?? {};
+  const hf = criteria.hard_filters ?? {};
+  const sp = criteria.soft_preferences ?? {};
+
+  const typeLabels: Record<string, string> = {
+    apartment: 'Apartamento', house: 'Casa', studio: 'Studio',
+    commercial: 'Comercial', land: 'Terreno',
+  };
+
   const items = [
     {
       icon: MapPin,
       label: 'Localização',
-      value: [criteria.city, ...(criteria.neighborhoods ?? [])].filter(Boolean).join(', ') || null,
+      value: [loc.city, ...(loc.neighborhoods ?? [])].filter(Boolean).join(', ') || null,
     },
     {
       icon: Home,
       label: 'Tipo',
-      value: criteria.property_type
-        ? { apartment: 'Apartamento', house: 'Casa', studio: 'Studio', commercial: 'Comercial', land: 'Terreno' }[criteria.property_type]
-        : null,
+      value: hf.property_type ? (typeLabels[hf.property_type] ?? hf.property_type) : null,
     },
     {
       icon: BedDouble,
       label: 'Quartos',
       value:
-        criteria.bedrooms_min != null
-          ? criteria.bedrooms_max != null && criteria.bedrooms_max !== criteria.bedrooms_min
-            ? `${criteria.bedrooms_min}–${criteria.bedrooms_max}`
-            : `${criteria.bedrooms_min}+`
+        hf.bedrooms_min != null
+          ? hf.bedrooms_max != null && hf.bedrooms_max !== hf.bedrooms_min
+            ? `${hf.bedrooms_min}–${hf.bedrooms_max}`
+            : `${hf.bedrooms_min}+`
           : null,
     },
     {
       icon: Maximize2,
       label: 'Área',
       value:
-        criteria.area_min_m2 != null || criteria.area_max_m2 != null
-          ? [criteria.area_min_m2 && `${criteria.area_min_m2}m²`, criteria.area_max_m2 && `até ${criteria.area_max_m2}m²`]
+        hf.area_min_m2 != null || hf.area_max_m2 != null
+          ? [hf.area_min_m2 && `${hf.area_min_m2}m²`, hf.area_max_m2 && `até ${hf.area_max_m2}m²`]
               .filter(Boolean)
               .join(' — ')
           : null,
@@ -125,21 +139,25 @@ function CriteriaGrid({ criteria }: { criteria: ExtractedCriteria }) {
       icon: DollarSign,
       label: 'Preço',
       value:
-        criteria.price_max != null
-          ? `até R$ ${criteria.price_max.toLocaleString('pt-BR')}`
-          : null,
+        hf.price_min != null && hf.price_max != null
+          ? `R$ ${hf.price_min.toLocaleString('pt-BR')} — R$ ${hf.price_max.toLocaleString('pt-BR')}`
+          : hf.price_min != null
+            ? `a partir de R$ ${hf.price_min.toLocaleString('pt-BR')}`
+            : hf.price_max != null
+              ? `até R$ ${hf.price_max.toLocaleString('pt-BR')}`
+              : null,
     },
     {
       icon: Car,
       label: 'Vagas',
-      value: criteria.parking_spots != null ? `${criteria.parking_spots} vaga(s)` : null,
+      value: hf.parking_min != null ? `${hf.parking_min} vaga(s)` : null,
     },
   ].filter((i) => i.value !== null);
 
   const flags = [
-    criteria.near_metro && 'Perto do metrô',
-    criteria.pet_friendly && 'Aceita pets',
-    criteria.furnished && 'Mobiliado',
+    sp.near_metro && 'Perto do metrô',
+    sp.pet_friendly && 'Aceita pets',
+    sp.furnished && 'Mobiliado',
   ].filter(Boolean) as string[];
 
   return (
@@ -158,11 +176,11 @@ function CriteriaGrid({ criteria }: { criteria: ExtractedCriteria }) {
         ))}
       </div>
 
-      {criteria.amenities && criteria.amenities.length > 0 && (
+      {(sp.amenities?.length ?? 0) > 0 && (
         <div>
           <p className="text-xs text-muted-foreground mb-2">Comodidades</p>
           <div className="flex flex-wrap gap-2">
-            {criteria.amenities.map((a) => (
+            {sp.amenities!.map((a) => (
               <Badge key={a} variant="secondary" className="text-xs">
                 {a}
               </Badge>

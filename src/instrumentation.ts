@@ -1,6 +1,8 @@
 export async function register() {
   if (process.env.NEXT_RUNTIME === 'nodejs') {
-    await import('../sentry.server.config');
+    if (process.env.NODE_ENV === 'production') {
+      await import('../sentry.server.config');
+    }
 
     // Pre-load IBGE city cache (all 5571 Brazilian municipalities → state UF)
     const { preloadCityCache } = await import('@/server/search/city-lookup');
@@ -12,9 +14,12 @@ export async function register() {
     const { startSearchWorker } = await import('@/server/search/queue');
     const { startHitlWorker } = await import('@/server/briefings/hitl-queue');
     const { startExportWorker } = await import('@/server/lgpd/export-queue');
+    const { startSyncWorker, startSyncScheduler } = await import('@/server/partners/sync-queue');
     startSearchWorker();
     startHitlWorker();
     startExportWorker();
+    startSyncWorker();
+    startSyncScheduler();
   }
 
   if (process.env.NEXT_RUNTIME === 'edge') {

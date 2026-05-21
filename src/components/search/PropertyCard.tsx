@@ -2,7 +2,7 @@
 
 import Image from 'next/image';
 import { useState } from 'react';
-import { TrendingUp } from 'lucide-react';
+import { TrendingUp, ImageOff } from 'lucide-react';
 
 export interface PropertyCardData {
   id: string;
@@ -92,8 +92,33 @@ function formatPrice(price: number, type: 'sale' | 'rent'): string {
   return type === 'rent' ? `${formatted}/mês` : formatted;
 }
 
+export function PropertyCardSkeleton() {
+  return (
+    <article className="rounded-xl border border-border bg-card overflow-hidden">
+      <div className="h-36 w-full bg-skeleton animate-pulse" />
+      <div className="p-3 space-y-2.5">
+        <div className="h-4 w-28 rounded bg-skeleton animate-pulse" />
+        <div className="h-3 w-full rounded bg-skeleton animate-pulse" />
+        <div className="h-3 w-3/4 rounded bg-skeleton animate-pulse" />
+        <div className="flex gap-2 pt-0.5">
+          <div className="h-3 w-14 rounded bg-skeleton animate-pulse" />
+          <div className="h-3 w-12 rounded bg-skeleton animate-pulse" />
+          <div className="h-3 w-10 rounded bg-skeleton animate-pulse" />
+        </div>
+        <div className="h-3 w-16 rounded bg-skeleton animate-pulse" />
+      </div>
+    </article>
+  );
+}
+
+function proxyUrl(url: string): string {
+  return `/api/v1/img?url=${encodeURIComponent(url)}`;
+}
+
 export function PropertyCard({ property, selected, onToggleSelect }: PropertyCardProps) {
-  const photo = property.photos[0];
+  const rawPhoto = property.photos[0];
+  const photo = rawPhoto ? proxyUrl(rawPhoto) : undefined;
+  const [photoFailed, setPhotoFailed] = useState(false);
   const highlightedAmenities = Object.entries(property.extractedAmenities)
     .filter(([k, v]) => v && AMENITY_LABELS[k])
     .map(([k]) => AMENITY_LABELS[k]!)
@@ -108,11 +133,11 @@ export function PropertyCard({ property, selected, onToggleSelect }: PropertyCar
         selected ? 'border-primary ring-2 ring-primary/20' : 'border-border hover:border-primary/40'
       }`}
     >
-      {/* Selection checkbox */}
+      {/* Selection checkbox — sits above the link layer */}
       {onToggleSelect && (
         <button
           onClick={() => onToggleSelect(property.id)}
-          className="absolute top-3 left-3 z-10 h-6 w-6 rounded-md border-2 border-white bg-white/80 backdrop-blur-sm flex items-center justify-center shadow-sm"
+          className="absolute top-3 left-3 z-20 h-6 w-6 rounded-md border-2 border-white bg-white/80 backdrop-blur-sm flex items-center justify-center shadow-sm"
           aria-label={selected ? 'Desmarcar imóvel' : 'Selecionar imóvel'}
         >
           {selected && (
@@ -125,95 +150,93 @@ export function PropertyCard({ property, selected, onToggleSelect }: PropertyCar
 
       {/* Match % badge — top right, prominent */}
       {score != null && colors && (
-        <div className={`absolute top-3 right-3 z-10 flex items-center gap-1 rounded-full px-2.5 py-1 shadow-md ring-2 ${colors.bg} ${colors.ring}`}>
+        <div className={`absolute top-3 right-3 z-20 flex items-center gap-1 rounded-full px-2.5 py-1 shadow-md ring-2 ${colors.bg} ${colors.ring}`}>
           <TrendingUp className={`h-3 w-3 ${colors.text}`} />
           <span className={`text-xs font-bold tabular-nums ${colors.text}`}>{score}%</span>
         </div>
       )}
 
-      {/* Photo */}
-      <div className="relative h-36 w-full bg-muted">
-        {photo ? (
-          <Image
-            src={photo}
-            alt={property.title}
-            fill
-            className="object-cover"
-            unoptimized // portal photos are external — no Next.js optimization
-            onError={(e) => {
-              const target = e.currentTarget as HTMLImageElement;
-              target.style.display = 'none';
-              const parent = target.parentElement;
-              if (parent) {
-                const fallback = document.createElement('div');
-                fallback.className = 'h-full w-full flex items-center justify-center text-muted-foreground text-sm';
-                fallback.textContent = 'Sem foto';
-                parent.appendChild(fallback);
-              }
-            }}
-          />
-        ) : (
-          <div className="h-full w-full flex items-center justify-center text-muted-foreground text-sm">
-            Sem foto
-          </div>
-        )}
-        {/* Source badge — favicon from Google's free CDN */}
-        <span className="absolute bottom-2 right-2 rounded-md bg-black/60 px-1.5 py-1 flex items-center gap-1">
-          <SourceFavicon url={property.url} fallbackLabel={SOURCE_LABELS[property.source] ?? property.source} />
-        </span>
-      </div>
-
-      {/* Content */}
-      <div className="p-3 space-y-2">
-        {/* Price */}
-        <p className="text-base font-bold text-foreground">
-          {formatPrice(property.price, property.priceType)}
-        </p>
-
-        {/* Title / address */}
-        <p className="text-xs text-muted-foreground line-clamp-1">{property.title}</p>
-        <p className="text-xs text-muted-foreground truncate">{property.neighborhood}, {property.city}</p>
-
-        {/* Specs */}
-        <div className="flex gap-2 text-xs text-muted-foreground flex-wrap">
-          {property.bedrooms != null && (
-            <span>{property.bedrooms} {property.bedrooms === 1 ? 'quarto' : 'quartos'}</span>
+      {/* Entire card body links to the listing — opens in new tab */}
+      <a
+        href={property.url}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="block focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+        onClick={(e) => {
+          // Don't navigate if user was trying to select the card
+          if ((e.target as HTMLElement).closest('button')) e.preventDefault();
+        }}
+        aria-label={`Abrir ${property.title} no portal`}
+      >
+        {/* Photo */}
+        <div className="relative h-36 w-full bg-muted">
+          {photo && !photoFailed ? (
+            <Image
+              src={photo}
+              alt={property.title}
+              fill
+              className="object-cover"
+              unoptimized
+              onError={() => setPhotoFailed(true)}
+            />
+          ) : (
+            <div className="h-full w-full flex flex-col items-center justify-center gap-1.5 text-muted-foreground/40">
+              <ImageOff className="h-8 w-8" />
+              <span className="text-xs">Sem foto</span>
+            </div>
           )}
-          {property.bathrooms != null && (
-            <span>{property.bathrooms} {property.bathrooms === 1 ? 'banheiro' : 'banheiros'}</span>
-          )}
-          {property.areaSqm != null && <span>{property.areaSqm} m²</span>}
-          {property.parkingSpots != null && property.parkingSpots > 0 && (
-            <span>{property.parkingSpots} {property.parkingSpots === 1 ? 'vaga' : 'vagas'}</span>
-          )}
-          {property.furnished === true && <span>Mobiliado</span>}
+          {/* Source badge — favicon from Google's free CDN */}
+          <span className="absolute bottom-2 right-2 rounded-md bg-black/60 px-1.5 py-1 flex items-center gap-1">
+            <SourceFavicon url={property.url} fallbackLabel={SOURCE_LABELS[property.source] ?? property.source} />
+          </span>
         </div>
 
-        {/* Extracted amenities badges */}
-        {highlightedAmenities.length > 0 && (
-          <div className="flex flex-wrap gap-1">
-            {highlightedAmenities.map((label) => (
-              <span
-                key={label}
-                className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] text-primary font-medium"
-              >
-                {label}
-              </span>
-            ))}
-          </div>
-        )}
+        {/* Content */}
+        <div className="p-3 space-y-2">
+          {/* Price */}
+          <p className="text-base font-bold text-foreground">
+            {formatPrice(property.price, property.priceType)}
+          </p>
 
-        {/* External link */}
-        <a
-          href={property.url}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="inline-block text-[11px] text-primary underline underline-offset-2 hover:no-underline"
-          onClick={(e) => e.stopPropagation()}
-        >
-          Ver no portal →
-        </a>
-      </div>
+          {/* Title / address */}
+          <p className="text-xs text-muted-foreground line-clamp-1">{property.title}</p>
+          <p className="text-xs text-muted-foreground truncate">{property.neighborhood}, {property.city}</p>
+
+          {/* Specs */}
+          <div className="flex gap-2 text-xs text-muted-foreground flex-wrap">
+            {property.bedrooms != null && (
+              <span>{property.bedrooms} {property.bedrooms === 1 ? 'quarto' : 'quartos'}</span>
+            )}
+            {property.bathrooms != null && (
+              <span>{property.bathrooms} {property.bathrooms === 1 ? 'banheiro' : 'banheiros'}</span>
+            )}
+            {property.areaSqm != null && <span>{property.areaSqm} m²</span>}
+            {property.parkingSpots != null && property.parkingSpots > 0 && (
+              <span>{property.parkingSpots} {property.parkingSpots === 1 ? 'vaga' : 'vagas'}</span>
+            )}
+            {property.furnished === true && <span>Mobiliado</span>}
+          </div>
+
+          {/* Extracted amenities badges */}
+          {highlightedAmenities.length > 0 && (
+            <div className="flex flex-wrap gap-1">
+              {highlightedAmenities.map((label) => (
+                <span
+                  key={label}
+                  className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] text-primary font-medium"
+                >
+                  {label}
+                </span>
+              ))}
+            </div>
+          )}
+
+          {/* Link hint */}
+          <p className="text-[11px] text-primary font-medium">
+            Ver no portal →
+          </p>
+        </div>
+      </a>
     </article>
   );
 }

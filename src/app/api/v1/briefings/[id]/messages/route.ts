@@ -140,15 +140,15 @@ export async function POST(
       const firstProp = propertiesForMessage[0];
       if (!firstProp) throw new AppError('VALIDATION_FAILED', 'No property', 'Nenhum imóvel.', 400);
 
-      // Build a concise client profile summary from extracted criteria
-      const criteria = briefing.extractedCriteria as Record<string, unknown> | null;
+      // Build a concise client profile summary from extracted criteria (new nested schema)
+      const criteria = briefing.extractedCriteria as { location?: { city?: string; neighborhoods?: string[] }; hard_filters?: { bedrooms_min?: number; price_max?: number }; intent?: string } | null;
       const profileParts: string[] = [];
-      if (criteria?.bedroomsMin) profileParts.push(`${criteria.bedroomsMin}+ quartos`);
-      if (criteria?.priceMax) profileParts.push(`até R$ ${Number(criteria.priceMax).toLocaleString('pt-BR')}`);
-      if (criteria?.neighborhood) profileParts.push(`${criteria.neighborhood}`);
-      if (criteria?.city) profileParts.push(`${criteria.city}`);
-      if (criteria?.purpose === 'buy') profileParts.push('compra');
-      if (criteria?.purpose === 'rent') profileParts.push('locação');
+      if (criteria?.hard_filters?.bedrooms_min) profileParts.push(`${criteria.hard_filters.bedrooms_min}+ quartos`);
+      if (criteria?.hard_filters?.price_max) profileParts.push(`até R$ ${Number(criteria.hard_filters.price_max).toLocaleString('pt-BR')}`);
+      if (criteria?.location?.neighborhoods?.[0]) profileParts.push(criteria.location.neighborhoods[0]);
+      if (criteria?.location?.city) profileParts.push(`${criteria.location.city}`);
+      if (criteria?.intent === 'buy') profileParts.push('compra');
+      if (criteria?.intent === 'rent') profileParts.push('locação');
       const clientProfile = profileParts.length > 0
         ? profileParts.join(', ')
         : `interessado em ${briefing.client.name}`;

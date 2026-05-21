@@ -1,64 +1,27 @@
 import 'server-only';
 import { logger } from '@/server/lib/logger';
-import { zapAdapter } from './adapters/zap';
-import { vivarealAdapter } from './adapters/vivareal';
 import { mockAdapter } from './adapters/mock';
-import { portalXAdapter } from './adapters/portal_x';
-import { partnerBAdapter } from './adapters/partner_b';
 import { scrapeCustomUrl } from './adapters/custom-url';
-import { startHealthMonitor } from './health-monitor';
+import { prisma } from '@/server/db/client';
+import { scrapePartnerSite } from '@/server/partners/strategy';
+import { searchCachedInventory } from '@/server/partners/site-sync';
+import { enqueueSiteSync } from '@/server/partners/sync-queue';
 import type { NormalizedListing, SearchCriteria, SourceAdapter } from './types';
 
-const SOURCE_TIMEOUT_MS = 90_000;   // 90s per preset source — Firecrawl JSON extraction needs ~90s
-const CUSTOM_URL_TIMEOUT_MS = 90_000; // 90s per custom URL (Firecrawl MAP can be slow)
+const SOURCE_TIMEOUT_MS = 150_000;
+const CUSTOM_URL_TIMEOUT_MS = 90_000;
 
 // ---------------------------------------------------------------------------
-// Preset adapter registry
-// ---------------------------------------------------------------------------
-
-const PRESET_ADAPTERS: Record<string, SourceAdapter> = {
-  zap: zapAdapter,
-  vivareal: vivarealAdapter,
-};
-
-function getPresetAdapters(selectedPortals?: string[]): SourceAdapter[] {
-  if (process.env.SOURCE_MOCK === 'true') return [mockAdapter];
-
-  // undefined = not specified → use all defaults; [] = explicitly none selected
-  const wanted = selectedPortals ?? ['zap', 'vivareal'];
-
-  const adapters: SourceAdapter[] = wanted
-    .map((name) => PRESET_ADAPTERS[name])
-    .filter((a): a is SourceAdapter => a !== undefined);
-
-  // Source 2: portal_x via scraper VPS — always included when configured
-  if (process.env.SCRAPER_VPS_URL && process.env.SCRAPER_VPS_INTERNAL_KEY) {
-    adapters.push(portalXAdapter);
-  }
-
-  // Source 3: partner_b REST API — feature flagged OFF until LOI signed
-  if (process.env.FEATURE_SOURCE_PARTNER_B === 'true') {
-    adapters.push(partnerBAdapter);
-  }
-
-  return adapters;
-}
-
-let monitorsStarted = false;
-
-function ensureMonitorsRunning(adapters: SourceAdapter[]): void {
-  if (monitorsStarted) return;
-  monitorsStarted = true;
-  startHealthMonitor(adapters);
-}
-
-// ---------------------------------------------------------------------------
-// Fan-out search
+// Fan-out search — only partner sites and custom URLs.
+// Preset portal adapters (ZAP, VivaReal) are kept in adapters/ but not wired
+// into the pipeline; the product operates on manually-provided sources only.
 // ---------------------------------------------------------------------------
 
 export interface SearchOptions {
-  portals?: string[];    // broker-selected preset portals
-  customUrls?: string[]; // broker-provided imobiliária URLs
+  customUrls?: string[];
+  userId?: string;
+  /** When provided, only these partner sites are searched (by ID). */
+  partnerSiteIds?: string[];
 }
 
 export interface SearchResult {
@@ -68,27 +31,104 @@ export interface SearchResult {
   durationMs: number;
 }
 
+// ---------------------------------------------------------------------------
+// Demand-based TTL: more searches → shorter sync interval → fresher data.
+// Thresholds are intentionally conservative to avoid over-scraping.
+// ---------------------------------------------------------------------------
+function computeSyncIntervalDays(searchCount: number): number {
+  if (searchCount >= 100) return 1;   // very popular: daily
+  if (searchCount >= 30)  return 2;
+  if (searchCount >= 10)  return 3;
+  if (searchCount >= 3)   return 5;
+  return 7;                           // rarely queried: weekly
+}
+
+async function getPartnerAdapters(opts: { userId?: string; partnerSiteIds?: string[] }): Promise<SourceAdapter[]> {
+  try {
+    const where = opts.partnerSiteIds && opts.partnerSiteIds.length > 0
+      ? { id: { in: opts.partnerSiteIds }, active: true }
+      : opts.userId
+        ? { userId: opts.userId, active: true }
+        : { active: true };
+    const sites = await prisma.partnerSite.findMany({ where });
+
+    return sites.map((site) => {
+      const syncAgeMs = site.lastScrapedAt
+        ? Date.now() - site.lastScrapedAt.getTime()
+        : Infinity;
+      const syncFreshMs = site.syncIntervalDays * 24 * 60 * 60 * 1000;
+
+      // A site has usable cache once it has completed at least one sync.
+      const hasCache = site.syncStatus === 'done';
+      const isFresh  = hasCache && syncAgeMs < syncFreshMs;
+
+      return {
+        name: site.domain as SourceAdapter['name'],
+        search: async (c: SearchCriteria) => {
+          // Increment searchCount and auto-adjust syncIntervalDays (non-blocking).
+          const newCount = site.searchCount + 1;
+          const newInterval = computeSyncIntervalDays(newCount);
+          prisma.partnerSite.update({
+            where: { id: site.id },
+            data: {
+              searchCount: { increment: 1 },
+              ...(newInterval !== site.syncIntervalDays ? { syncIntervalDays: newInterval } : {}),
+            },
+          }).catch(() => {});
+
+          if (hasCache) {
+            // Stale-while-revalidate: always return from cache immediately.
+            // If stale, trigger a background sync so the *next* search gets fresh data.
+            if (!isFresh) {
+              void enqueueSiteSync(site.id);
+              logger.info('stale_cache_revalidating', {
+                domain: site.domain,
+                syncAgeDays: Math.round(syncAgeMs / 86_400_000),
+              });
+            }
+            return searchCachedInventory(site, c);
+          }
+
+          // No cache yet (first time): scrape live and block until done,
+          // then trigger a background sync so subsequent searches use cache.
+          void enqueueSiteSync(site.id);
+          return scrapePartnerSite(site, c);
+        },
+        healthCheck: () => Promise.resolve({
+          source: site.domain,
+          healthy: true,
+          successRate: 1,
+          lastCheckedAt: new Date().toISOString(),
+        }),
+      };
+    });
+  } catch {
+    return [];
+  }
+}
+
 export async function runSearch(
   criteria: SearchCriteria,
   options: SearchOptions = {},
 ): Promise<SearchResult> {
-  const { portals, customUrls = [] } = options;
-  const adapters = getPresetAdapters(portals);
-  ensureMonitorsRunning(adapters);
+  const { customUrls = [], userId, partnerSiteIds } = options;
+
+  // In test/dev mode, use mock adapter as the only source
+  const adapters: SourceAdapter[] = process.env.SOURCE_MOCK === 'true'
+    ? [mockAdapter]
+    : await getPartnerAdapters({ userId, partnerSiteIds });
 
   const start = Date.now();
 
-  logger.info('search started', {
+  logger.info('search_started', {
     city: criteria.city,
     neighborhood: criteria.neighborhood,
     purpose: criteria.purpose,
-    presetSources: adapters.map((a) => a.name),
+    partnerSites: adapters.map((a) => a.name),
     customUrlCount: customUrls.length,
   });
 
-  // Fan-out preset adapters + custom URLs in parallel
-  const [presetSettled, customSettled] = await Promise.all([
-    // Preset portal adapters with individual timeouts
+  const [partnerSettled, customSettled] = await Promise.all([
     Promise.allSettled(
       adapters.map((adapter) =>
         Promise.race([
@@ -102,7 +142,6 @@ export async function runSearch(
         ]),
       ),
     ),
-    // Custom URLs with per-URL timeout
     Promise.all(
       customUrls.map((url) =>
         Promise.race([
@@ -122,38 +161,26 @@ export async function runSearch(
   const sourceErrors: Array<{ source: string; error: string }> = [];
   const customUrlResults: Array<{ url: string; count: number; error?: string }> = [];
 
-  // Collect preset results
-  for (let i = 0; i < presetSettled.length; i++) {
-    const result = presetSettled[i]!;
+  for (let i = 0; i < partnerSettled.length; i++) {
+    const result = partnerSettled[i]!;
     const source = adapters[i]!.name;
-
     if (result.status === 'fulfilled') {
       listings.push(...result.value);
-      logger.info('preset source returned', { source, count: result.value.length });
+      logger.info('partner_source_returned', { source, count: result.value.length });
     } else {
       const error = String(result.reason);
       sourceErrors.push({ source, error });
-      logger.warn('preset source failed', { source, error });
+      logger.warn('partner_source_failed', { source, error });
     }
   }
 
-  // Collect custom URL results
   for (const result of customSettled) {
     listings.push(...result.listings);
-    customUrlResults.push({
-      url: result.url,
-      count: result.listings.length,
-      error: result.error,
-    });
+    customUrlResults.push({ url: result.url, count: result.listings.length, error: result.error });
   }
 
   const durationMs = Date.now() - start;
-  logger.info('search complete', {
-    total: listings.length,
-    durationMs,
-    sourceErrors: sourceErrors.length,
-    customUrlResults,
-  });
+  logger.info('search_complete', { total: listings.length, durationMs, sourceErrors: sourceErrors.length });
 
   return { listings, sourceErrors, customUrlResults, durationMs };
 }

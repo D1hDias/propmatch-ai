@@ -21,7 +21,12 @@ export function deduplicate(listings: NormalizedListing[]): NormalizedListing[] 
 
   for (const listing of listings) {
     const addressNorm = normalizeAddress(listing.address);
-    const key = dedupKey(addressNorm, listing.geohash7, listing.bedrooms);
+    // When we have no address and no geolocation (scraped listings), fall back to
+    // the listing URL as the dedup key — it's unique per property and prevents
+    // collapsing unrelated listings that share the same bedroom count.
+    const key = (!addressNorm && !listing.geohash7)
+      ? `url|${listing.url}`
+      : dedupKey(addressNorm, listing.geohash7, listing.bedrooms);
 
     const existing = canonical.get(key);
     if (!existing) {

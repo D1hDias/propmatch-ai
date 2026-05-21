@@ -1,7 +1,6 @@
 import 'server-only';
 import { logger } from '@/server/lib/logger';
 import { scrapeWithFirecrawl } from '../firecrawl-scraper';
-import { scrapeWithPlaywright } from '../playwright-scraper';
 import { buildZapUrl } from '../url-builder';
 import type { HealthStatus, NormalizedListing, SearchCriteria, SourceAdapter } from '../types';
 
@@ -34,25 +33,13 @@ export const zapAdapter: SourceAdapter = {
     logger.info('zap search', { url, city: criteria.city });
 
     try {
-      // Primary: Firecrawl (uses API credits, but cleanest data)
       const listings = await scrapeWithFirecrawl(url, 'zap', criteria);
       recordResult(true);
       return listings;
-    } catch (firecrawlErr) {
-      logger.warn('zap firecrawl failed — falling back to playwright', {
-        error: firecrawlErr,
-        url,
-      });
-
-      try {
-        const listings = await scrapeWithPlaywright(url, 'zap', criteria);
-        recordResult(listings.length > 0);
-        return listings;
-      } catch (playwrightErr) {
-        recordResult(false);
-        logger.error('zap playwright fallback failed', { error: playwrightErr, url });
-        return [];
-      }
+    } catch (err) {
+      recordResult(false);
+      logger.error('zap firecrawl failed', { error: err, url });
+      return [];
     }
   },
 

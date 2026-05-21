@@ -70,10 +70,10 @@ export default function DashboardPage() {
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-5">
           {Array.from({ length: 4 }).map((_, i) => (
-            <div key={i} className="h-28 bg-muted rounded-xl animate-pulse" />
+            <div key={i} className="h-28 bg-skeleton rounded-xl animate-pulse" />
           ))}
         </div>
-        <div className="h-48 bg-muted rounded-xl animate-pulse" />
+        <div className="h-48 bg-skeleton rounded-xl animate-pulse" />
       </div>
     );
   }

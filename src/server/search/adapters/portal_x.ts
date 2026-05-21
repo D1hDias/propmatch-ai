@@ -21,7 +21,7 @@ function successRate(): number {
 
 // ---------------------------------------------------------------------------
 // Scraper VPS client
-// Calls our dedicated scraper VPS (Playwright fleet) via authenticated
+// Calls our dedicated scraper VPS via authenticated
 // internal REST API. The VPS URL and key come from env vars so we can
 // point dev at a local scraper without code changes.
 // ---------------------------------------------------------------------------

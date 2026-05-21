@@ -62,9 +62,10 @@ const config: Config = {
           DEFAULT:    'hsl(var(--destructive))',
           foreground: 'hsl(var(--destructive-foreground))',
         },
-        border: 'hsl(var(--border))',
-        input:  'hsl(var(--input))',
-        ring:   'hsl(var(--ring))',
+        border:   'hsl(var(--border))',
+        input:    'hsl(var(--input))',
+        ring:     'hsl(var(--ring))',
+        skeleton: 'hsl(var(--skeleton))',
 
         // PropMatch semantic colors (§2 from design.md)
         success: '#4FD66E',

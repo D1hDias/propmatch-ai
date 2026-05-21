@@ -1,5 +1,5 @@
 import 'server-only';
-import { callAnthropic } from '@/server/lib/anthropic';
+import { callLLM } from '@/server/lib/llm';
 import { MODELS } from '@/server/lib/models';
 import { logger } from '@/server/lib/logger';
 
@@ -66,7 +66,7 @@ export async function extractAmenities(
   if (!description || description.trim().length < 20) return empty;
 
   try {
-    const response = await callAnthropic({
+    const response = await callLLM({
       model: MODELS.amenityExtraction,
       system: SYSTEM_PROMPT,
       messages: [{ role: 'user', content: buildPrompt(description) }],

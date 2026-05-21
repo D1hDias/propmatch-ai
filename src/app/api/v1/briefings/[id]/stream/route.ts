@@ -68,9 +68,16 @@ export async function GET(
 
         controller.enqueue(event('status_update', { status: briefing.status }));
 
+        // Skip initial delay when briefing is already in a terminal state — deliver results immediately
+        const alreadyDone = briefing.status === 'ready' || briefing.status === 'failed';
+
         // Poll for results
+        let firstPoll = true;
         while (Date.now() - started < MAX_WAIT_MS) {
-          await new Promise((r) => setTimeout(r, POLL_INTERVAL));
+          if (!firstPoll || !alreadyDone) {
+            await new Promise((r) => setTimeout(r, POLL_INTERVAL));
+          }
+          firstPoll = false;
 
           const current = await prisma.briefing.findFirst({
             where: { id, userId: ctx.sub },
@@ -132,15 +139,28 @@ export async function GET(
                 durationMs: Date.now() - started,
                 widenProposals: meta['_widenProposals'] ?? [],
                 customUrlResults: meta['_customUrlResults'] ?? [],
+                belowThresholdCount: meta['_belowThresholdCount'] ?? 0,
               }),
             );
             break;
           }
 
           if (current.status === 'failed') {
-            controller.enqueue(
-              event('search_error', { message: 'Busca falhou. Tente novamente.' }),
-            );
+            // If we already have results (search partially completed before failure), treat as done
+            if (lastResultCount > 0) {
+              controller.enqueue(
+                event('search_complete', {
+                  total: lastResultCount,
+                  durationMs: Date.now() - started,
+                  widenProposals: [],
+                  customUrlResults: [],
+                }),
+              );
+            } else {
+              controller.enqueue(
+                event('search_error', { message: 'Busca falhou. Tente novamente.' }),
+              );
+            }
             break;
           }
         }

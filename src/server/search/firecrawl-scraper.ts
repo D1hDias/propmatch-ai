@@ -1,11 +1,11 @@
 import 'server-only';
 import FirecrawlApp from '@mendable/firecrawl-js';
 import { z } from 'zod';
+import { getCityUF } from './city-lookup';
 import { logger } from '@/server/lib/logger';
-import { callAnthropic } from '@/server/lib/anthropic';
-import { MODELS } from '@/server/lib/models';
 import type { NormalizedListing, SearchCriteria } from './types';
 import { extractAmenities } from './amenity-extractor';
+import { scrapeHtmlListings } from './html-scraper';
 
 let _firecrawl: FirecrawlApp | null = null;
 
@@ -13,7 +13,7 @@ function getFirecrawl(): FirecrawlApp {
   if (!_firecrawl) {
     const apiKey = process.env.FIRECRAWL_API_KEY;
     if (!apiKey) throw new Error('FIRECRAWL_API_KEY env var is not set');
-    _firecrawl = new FirecrawlApp({ apiKey });
+    _firecrawl = new FirecrawlApp({ apiKey, apiUrl: process.env.FIRECRAWL_API_URL });
   }
   return _firecrawl;
 }
@@ -63,44 +63,60 @@ const pageSchema = z.object({
 type RawListing = z.infer<typeof listingSchema>;
 
 // ---------------------------------------------------------------------------
-// LLM-based extraction from page markdown (our own LLM via OpenRouter)
+// Firecrawl native JSON extraction
 //
-// Strategy: Firecrawl renders the page and returns clean markdown. We then
-// run our own LLM (Gemini via OpenRouter) to extract structured listings.
-// This gives full control over price accuracy and filtering quality —
-// Firecrawl's internal LLM was producing wrong prices in tests.
+// Strategy: Firecrawl renders the page AND extracts structured data using its
+// own built-in AI (jsonOptions). No second LLM call via OpenRouter needed.
 // ---------------------------------------------------------------------------
 
-function buildExtractionSystemPrompt(criteria?: SearchCriteria): string {
-  const parts = [
-    `Você é um extrator especializado em dados imobiliários brasileiros.`,
-    `Receberá o markdown de uma página de busca de imóveis. Extraia TODOS os imóveis listados e retorne JSON válido no formato: {"listings": [...]}`,
-    ``,
-    `REGRAS CRÍTICAS:`,
-    `1. NUNCA invente, estime ou complete dados ausentes. Use null ou [] para campos não encontrados.`,
-    `2. PRICE (campo price): extraia o valor EXATO em reais (número inteiro sem símbolos/pontuação).`,
-    `   - "R$ 1.580.000" → 1580000`,
-    `   - "R$ 799 mil" → 799000`,
-    `   - "R$ 1,2 mi" → 1200000`,
-    `   - JAMAIS use o orçamento do cliente como preço. O preço real pode ser maior.`,
-    `3. URL: use a URL exata do link do imóvel, sem modificar. NUNCA invente URLs.`,
-    `4. Para cada imóvel extraia: url, title, description, photos (array URLs absolutas),`,
-    `   address, neighborhood, city, state, propertyType, listingType ("venda" ou "aluguel"),`,
-    `   bedrooms (int), bathrooms (int), areaSqm (número), parkingSpots (int),`,
-    `   price (inteiro em reais), furnished (boolean), amenities (array strings), lat, lng.`,
-    `5. Responda SOMENTE com JSON. Sem markdown, sem texto antes ou depois.`,
-  ];
+function buildExtractionPrompt(criteria: SearchCriteria): string {
+  const purpose = criteria.purpose === 'rent'
+    ? 'ALUGUEL. Ignore imóveis à venda.'
+    : 'VENDA. Ignore aluguel/locação/temporada.';
 
-  if (criteria) {
-    if (criteria.purpose === 'buy') {
-      parts.push(`6. EXTRAIA APENAS imóveis à VENDA. IGNORE aluguel/locação/temporada.`);
-    } else if (criteria.purpose === 'rent') {
-      parts.push(`6. EXTRAIA APENAS imóveis para ALUGUEL. IGNORE imóveis à venda.`);
-    }
-  }
-
-  return parts.join('\n');
+  return [
+    'Extraia TODOS os imóveis listados nesta página de busca imobiliária brasileira.',
+    `Extraia APENAS imóveis para ${purpose}`,
+    'Para cada imóvel: url (link direto do anúncio, não URL de imagem), title, description,',
+    'address, neighborhood, city, state, propertyType, listingType (venda ou aluguel),',
+    'bedrooms (inteiro), bathrooms (inteiro), areaSqm (número), parkingSpots (inteiro),',
+    'price (inteiro em reais, sem símbolos: "R$ 1.580.000" → 1580000, "R$ 799 mil" → 799000),',
+    'furnished (boolean), amenities (array de strings), lat, lng.',
+    'NUNCA invente dados. Use null para campos ausentes.',
+  ].join(' ');
 }
+
+const LISTING_JSON_SCHEMA = {
+  type: 'object',
+  properties: {
+    listings: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          url:          { type: 'string' },
+          title:        { type: 'string' },
+          description:  { type: 'string' },
+          address:      { type: 'string' },
+          neighborhood: { type: 'string' },
+          city:         { type: 'string' },
+          state:        { type: 'string' },
+          propertyType: { type: 'string' },
+          listingType:  { type: 'string' },
+          bedrooms:     { type: 'number' },
+          bathrooms:    { type: 'number' },
+          areaSqm:      { type: 'number' },
+          parkingSpots: { type: 'number' },
+          price:        { type: 'number' },
+          furnished:    { type: 'boolean' },
+          amenities:    { type: 'array', items: { type: 'string' } },
+          lat:          { type: 'number' },
+          lng:          { type: 'number' },
+        },
+      },
+    },
+  },
+} as const;
 
 // ---------------------------------------------------------------------------
 // Hard filter — applied after JSON extraction, before normalization.
@@ -190,10 +206,11 @@ const SEARCH_PAGE_PATTERNS = [
   /busca|search|resultado|listing|lista/i,
   // Brazilian real estate query params (finalidade, tipo, quartos, valor, etc.)
   /\?(finalidade|quartos|bedrooms|tipo|bairro|preco|price|min|max|valor|dormit)/i,
-  /\/(venda|aluguel|comprar|alugar|sale|rent)\//i,
+  // Includes "a-venda" (the Portuguese "for sale" preposition form) and "para-alugar"
+  /\/(a-venda|venda|aluguel|comprar|alugar|para-alugar|sale|rent)\//i,
   /categoria|category|filtro|filter/i,
   // Path-based search patterns common in Brazilian portals
-  /\/imoveis\/(venda|aluguel|comprar|alugar)/i,
+  /\/imoveis\/(a-venda|venda|aluguel|comprar|alugar|para-alugar)/i,
   /\/busca-imoveis|\/busca-avancada|\/pesquisa/i,
 ];
 
@@ -213,54 +230,35 @@ function classifyUrl(url: string): UrlClass {
   // even if its path also matches an individual listing pattern (e.g. /imoveis/?quartos=2).
   if (SEARCH_PAGE_PATTERNS.some((p) => p.test(url))) return 'search';
   if (INDIVIDUAL_LISTING_PATTERNS.some((p) => p.test(url))) return 'listing';
-  // URL with property-type keywords but no filter params is likely an individual listing
-  if (/apartamento|casa|studio|kitnet|terreno|cobertura/i.test(url)) return 'listing';
+  // Property-type keywords appear in both search filter paths (/apartamento/sao-paulo/)
+  // and individual listing slugs (/apartamento-3-quartos-12345). Distinguish by presence
+  // of a ≥5-digit numeric ID — that signals a single listing, not a filter segment.
+  if (/apartamento|casa|studio|kitnet|terreno|cobertura/i.test(url)) {
+    return /\/\d{5,}/.test(url) ? 'listing' : 'search';
+  }
   return 'other';
 }
 
-/**
- * Extracts structured listings from page markdown using our own LLM (via OpenRouter).
- * This replaces Firecrawl's internal LLM extraction which was producing wrong prices.
- */
-async function extractListingsFromMarkdown(
-  markdown: string,
-  criteria: SearchCriteria,
-): Promise<RawListing[]> {
-  // Truncate to avoid very large context costs — Gemini 2.0 Flash handles ~30K tokens well
-  const MAX_CHARS = 80_000;
-  const truncated = markdown.length > MAX_CHARS ? markdown.slice(0, MAX_CHARS) : markdown;
+// ---------------------------------------------------------------------------
+// Sitemap XML fetching — bypasses cookie consent walls entirely.
+// Many Brazilian real estate sites (e.g. Kenlo platform) expose sitemap XMLs
+// that list property URLs directly. Fetching the XML requires no JS rendering
+// and no cookie consent interaction.
+// ---------------------------------------------------------------------------
 
-  const system = buildExtractionSystemPrompt(criteria);
-
-  let response: Awaited<ReturnType<typeof callAnthropic>>;
+async function fetchSitemapUrls(sitemapUrl: string): Promise<string[]> {
   try {
-    response = await callAnthropic({
-      model: MODELS.listingExtraction,
-      system,
-      prompt: truncated,
-      maxTokens: 8192,
-      timeoutMs: 90_000,
-      maxAttempts: 2,
-      jsonMode: true,
+    const res = await fetch(sitemapUrl, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; PropMatch/1.0 +https://propmatch.ai)' },
+      signal: AbortSignal.timeout(15000),
     });
-  } catch (err) {
-    logger.warn('extractListingsFromMarkdown LLM call failed', { error: String(err) });
-    return [];
-  }
-
-  const text = response.content[0]?.text ?? '';
-  if (!text) return [];
-
-  try {
-    const cleaned = text.replace(/^```(?:json)?\n?/i, '').replace(/\n?```$/i, '').trim();
-    const parsed = pageSchema.safeParse(JSON.parse(cleaned));
-    if (!parsed.success) {
-      logger.warn('extractListingsFromMarkdown schema parse failed', { error: parsed.error.message });
-      return [];
-    }
-    return parsed.data.listings;
+    if (!res.ok) return [];
+    const xml = await res.text();
+    const matches = xml.match(/<loc>\s*(https?:\/\/[^<\s]+)\s*<\/loc>/gi) ?? [];
+    return matches
+      .map((m) => m.replace(/<\/?loc>/gi, '').trim())
+      .filter((u) => !u.match(/\.xml(\?|$)/i)); // exclude nested sitemaps
   } catch {
-    logger.warn('extractListingsFromMarkdown JSON parse failed', { textSnippet: text.slice(0, 200) });
     return [];
   }
 }
@@ -272,17 +270,21 @@ export async function scrapeWithFirecrawl(
 ): Promise<NormalizedListing[]> {
   logger.info('firecrawl scrape start', { url, source });
 
-  // Step 1: Firecrawl renders the page and returns clean markdown (no internal LLM).
-  // Step 2: We run our own LLM (Gemini via OpenRouter) for structured extraction —
-  //         this gives full control over price accuracy vs Firecrawl's internal LLM.
+  // Firecrawl renders the page AND extracts structured JSON using its own built-in AI.
+  // No separate OpenRouter LLM call needed — Firecrawl handles both rendering and extraction.
   let result: unknown;
   try {
-    result = await getFirecrawl().scrape(url, {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const scrapeOptions: any = {
       timeout: 90000,
-      waitFor: 8000,
-      formats: ['markdown'],
+      waitFor: 5000,
+      formats: [{ type: 'json', prompt: buildExtractionPrompt(criteria), schema: LISTING_JSON_SCHEMA }],
       proxy: 'stealth',
-    });
+      // Actions (scroll/click for LGPD banners) require Fire Engine which is not available
+      // in the self-hosted instance. Omitted intentionally — the self-hosted Playwright
+      // worker handles JS rendering without explicit action sequences.
+    };
+    result = await getFirecrawl().scrape(url, scrapeOptions);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.includes('SCRAPE_TIMEOUT') || msg.includes('timeout') || msg.includes('408')) {
@@ -292,17 +294,21 @@ export async function scrapeWithFirecrawl(
     throw err;
   }
 
-  const markdown = (result as Record<string, unknown>).markdown as string | undefined;
-  if (!markdown || markdown.trim().length < 100) {
-    logger.warn('firecrawl returned empty or very short markdown', { url, len: markdown?.length ?? 0 });
+  const json = (result as Record<string, unknown>).json as Record<string, unknown> | undefined;
+  if (!json) {
+    logger.warn('firecrawl returned no json', { url });
     return [];
   }
 
-  logger.info('firecrawl markdown received', { url, chars: markdown.length });
+  logger.info('firecrawl json received', { url });
 
-  // Step 2: extract with our LLM
-  const rawListings = await extractListingsFromMarkdown(markdown, criteria);
+  const parsed = pageSchema.safeParse(json);
+  if (!parsed.success) {
+    logger.warn('firecrawl json schema parse failed', { url, error: parsed.error.message });
+    return [];
+  }
 
+  const rawListings = parsed.data.listings;
   const beforeFilter = rawListings.length;
   const filtered = hardFilter(rawListings, criteria);
   if (filtered.length < beforeFilter) {
@@ -361,9 +367,29 @@ export async function mapAndScrapeWithFirecrawl(
       .map((l) => (typeof l === 'string' ? l : (l as { url?: string }).url ?? ''))
       .filter((u) => u && u !== url);
 
+    // Detect sitemap XML URLs — fetch these directly (no JS, no cookie consent)
+    // to get individual property URLs. Common on Kenlo-platform sites.
+    const sitemapXmlUrls = allUrls.filter((u) => u.match(/\.xml(\?|$)/i));
+    let sitemapListingUrls: string[] = [];
+    if (sitemapXmlUrls.length > 0) {
+      logger.info('firecrawl map found sitemap XMLs — fetching property URLs', {
+        sitemaps: sitemapXmlUrls.slice(0, 3),
+      });
+      const sitemapResults = await Promise.allSettled(
+        sitemapXmlUrls.slice(0, 2).map(fetchSitemapUrls),
+      );
+      for (const r of sitemapResults) {
+        if (r.status === 'fulfilled') sitemapListingUrls.push(...r.value);
+      }
+      logger.info('firecrawl sitemap property URLs fetched', { count: sitemapListingUrls.length });
+    }
+
     // Separate search-result pages from individual listing pages
     const searchPages = allUrls.filter((u: string) => classifyUrl(u) === 'search');
-    const listingPages = allUrls.filter((u: string) => classifyUrl(u) === 'listing');
+    const listingPages = sitemapListingUrls.length > 0
+      // Sitemap URLs are pre-classified as individual listings — use them when available
+      ? sitemapListingUrls
+      : allUrls.filter((u: string) => classifyUrl(u) === 'listing');
     const otherPages = allUrls.filter((u: string) => classifyUrl(u) === 'other');
 
     logger.info('firecrawl map classified URLs', {
@@ -371,13 +397,14 @@ export async function mapAndScrapeWithFirecrawl(
       total: allUrls.length,
       search: searchPages.length,
       listing: listingPages.length,
+      sitemapUsed: sitemapListingUrls.length > 0,
       other: otherPages.length,
       searchSamples: searchPages.slice(0, 3),
       listingSamples: listingPages.slice(0, 3),
     });
 
-    // Prefer search pages (multiple listings per page), then individual listings,
-    // then 'other' URLs as last resort — they might be search pages we didn't classify correctly.
+    // Prefer search pages (multiple listings per page), then individual listings
+    // (from sitemap if available — bypasses cookie consent), then 'other' as last resort.
     const toScrape: string[] =
       searchPages.length > 0
         ? searchPages.slice(0, maxSearchPages)
@@ -386,7 +413,29 @@ export async function mapAndScrapeWithFirecrawl(
           : otherPages.slice(0, 2); // last resort: try up to 2 unclassified pages
 
     if (toScrape.length === 0) {
-      logger.warn('firecrawl map found no usable URLs', { url, totalLinksFromMap: rawLinks.length });
+      logger.warn('firecrawl map found no usable URLs — trying HTML scraper on common search paths', {
+        url,
+        totalLinksFromMap: rawLinks.length,
+      });
+      // Kenlo-platform sites block headless MAP but serve full SSR HTML to plain GET.
+      // The homepage often has 0 JSON-LD blocks; search-result sub-pages (e.g. /imoveis/a-venda)
+      // carry the BuyAction structured data. Try them in order.
+      const baseRoot = url.replace(/\/+$/, '');
+      const candidatePaths = [
+        criteria.purpose === 'buy' ? '/imoveis/a-venda' : '/imoveis/aluguel',
+        '/imoveis',
+        '', // last resort: the entry URL itself
+      ];
+      for (const p of candidatePaths) {
+        const candidateUrl = `${baseRoot}${p}`;
+        const listings = await scrapeHtmlListings(candidateUrl, criteria);
+        if (listings.length > 0) {
+          logger.info('html_scraper_common_path_fallback_succeeded', { url: candidateUrl, count: listings.length });
+          return listings;
+        }
+        logger.info('html_scraper_common_path_empty', { url: candidateUrl });
+      }
+      logger.warn('html_scraper_all_fallbacks_empty', { url });
       return [];
     }
 
@@ -396,8 +445,18 @@ export async function mapAndScrapeWithFirecrawl(
       urls: toScrape,
     });
 
+    // Try HTML fetch first (bypasses cookie consent walls on SSR sites).
+    // Falls back to Firecrawl headless scraping when HTML returns nothing.
     const results = await Promise.allSettled(
-      toScrape.map((pageUrl) => scrapeWithFirecrawl(pageUrl, source, criteria)),
+      toScrape.map(async (pageUrl) => {
+        const htmlListings = await scrapeHtmlListings(pageUrl, criteria);
+        if (htmlListings.length > 0) {
+          logger.info('html_scraper_succeeded', { url: pageUrl, count: htmlListings.length });
+          return htmlListings;
+        }
+        logger.info('html_scraper_no_results_falling_back_to_firecrawl', { url: pageUrl });
+        return scrapeWithFirecrawl(pageUrl, source, criteria);
+      }),
     );
 
     const allListings: NormalizedListing[] = [];
@@ -435,7 +494,7 @@ async function normalizeFirecrawlListing(
     address: item.address,
     neighborhood: item.neighborhood || criteria.neighborhood || '',
     city: item.city || criteria.city,
-    state: item.state || 'SP',
+    state: item.state || getCityUF(item.city || criteria.city) || '',
     propertyType: item.propertyType,
     bedrooms: item.bedrooms,
     bathrooms: item.bathrooms,

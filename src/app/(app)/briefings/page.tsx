@@ -62,7 +62,7 @@ export default function BriefingsPage() {
       {loading ? (
         <div className="space-y-3">
           {Array.from({ length: 3 }).map((_, i) => (
-            <div key={i} className="h-16 bg-muted rounded-xl animate-pulse" />
+            <div key={i} className="h-16 bg-skeleton rounded-xl animate-pulse" />
           ))}
         </div>
       ) : briefings.length === 0 ? (
