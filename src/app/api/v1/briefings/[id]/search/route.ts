@@ -1,6 +1,6 @@
 import type { NextRequest } from 'next/server';
 import { requireAuth } from '@/server/auth/context';
-import { prisma } from '@/server/db/client';
+import { withRlsContext } from '@/server/db/client';
 import { apiSuccess, apiError } from '@/server/lib/response';
 import { AppError } from '@/server/lib/errors';
 import { searchQueue } from '@/server/search/queue';
@@ -21,8 +21,12 @@ export async function POST(
     const ctx = await requireAuth(req);
     const { id } = await params;
 
-    const briefing = await prisma.briefing.findFirst({
-      where: { id, userId: ctx.sub },
+    const briefing = await withRlsContext(ctx.sub, ctx.role, async (tx) => {
+      const b = await tx.briefing.findFirst({ where: { id, userId: ctx.sub } });
+      if (!b) return null;
+      // Update status to searching
+      await tx.briefing.update({ where: { id }, data: { status: 'searching' } });
+      return b;
     });
 
     if (!briefing) {
@@ -42,12 +46,6 @@ export async function POST(
         422,
       );
     }
-
-    // Update status to searching
-    await prisma.briefing.update({
-      where: { id },
-      data: { status: 'searching' },
-    });
 
     // extractedCriteria is stored as ExtractedCriteria (nested LLM output). Convert to
     // SearchCriteria for the search pipeline.

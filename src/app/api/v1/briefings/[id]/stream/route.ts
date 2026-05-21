@@ -89,6 +89,7 @@ export async function GET(
           const results = await prisma.briefingResult.findMany({
             where: { briefingId: id },
             orderBy: { rank: 'asc' },
+            take: 50,
             include: {
               property: {
                 include: { sources: { orderBy: { scrapedAt: 'desc' }, take: 1 } },

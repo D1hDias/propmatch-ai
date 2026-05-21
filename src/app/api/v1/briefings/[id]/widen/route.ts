@@ -1,7 +1,7 @@
 import type { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { requireAuth } from '@/server/auth/context';
-import { prisma } from '@/server/db/client';
+import { withRlsContext } from '@/server/db/client';
 import { apiSuccess, apiError } from '@/server/lib/response';
 import { AppError } from '@/server/lib/errors';
 import { searchQueue } from '@/server/search/queue';
@@ -26,8 +26,14 @@ export async function POST(
     const ctx = await requireAuth(req);
     const { id } = await params;
 
-    const briefing = await prisma.briefing.findFirst({
-      where: { id, userId: ctx.sub },
+    const body = bodySchema.parse(await req.json());
+
+    const briefing = await withRlsContext(ctx.sub, ctx.role, async (tx) => {
+      const b = await tx.briefing.findFirst({ where: { id, userId: ctx.sub } });
+      if (!b) return null;
+      // Reset status so SSE stream starts polling again
+      await tx.briefing.update({ where: { id }, data: { status: 'searching' } });
+      return b;
     });
 
     if (!briefing) {
@@ -38,14 +44,6 @@ export async function POST(
         404,
       );
     }
-
-    const body = bodySchema.parse(await req.json());
-
-    // Reset status so SSE stream starts polling again
-    await prisma.briefing.update({
-      where: { id },
-      data: { status: 'searching' },
-    });
 
     const job = await searchQueue.add('search', {
       briefingId: id,

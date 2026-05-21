@@ -1,6 +1,7 @@
 import type { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { requireAuth } from '@/server/auth/context';
+// Admin-only endpoint: uses prisma directly (service-role pattern, no user RLS context)
 import { prisma } from '@/server/db/client';
 import { apiSuccess, apiError } from '@/server/lib/response';
 import { AppError } from '@/server/lib/errors';

@@ -2,7 +2,7 @@ import 'server-only';
 import type { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { requireAuth } from '@/server/auth/context';
-import { prisma } from '@/server/db/client';
+import { withRlsContext, prisma } from '@/server/db/client';
 import { AppError } from '@/server/lib/errors';
 import { apiSuccess, apiError } from '@/server/lib/response';
 import { formatWhatsAppMessage, formatPartnerMessage } from '@/server/messaging/format';
@@ -44,16 +44,30 @@ export async function POST(
     }
     const { selectedProperties, target } = parsed.data;
 
-    // Load briefing (verify ownership)
-    const briefing = await prisma.briefing.findUnique({
-      where: { id: briefingId },
-      include: {
-        client: { select: { id: true, name: true } },
-        user: { select: { id: true, name: true } },
-      },
+    const propertyIds = selectedProperties.map((p) => p.propertyId);
+
+    // Load briefing + results under RLS — ownership enforced by the session context
+    const loaded = await withRlsContext(ctx.sub, ctx.role, async (tx) => {
+      const briefing = await tx.briefing.findUnique({
+        where: { id: briefingId },
+        include: {
+          client: { select: { id: true, name: true } },
+          user: { select: { id: true, name: true } },
+        },
+      });
+      if (!briefing) return null;
+      const results = await tx.briefingResult.findMany({
+        where: { briefingId, propertyId: { in: propertyIds } },
+        include: {
+          property: {
+            include: { sources: { orderBy: { scrapedAt: 'desc' }, take: 1 } },
+          },
+        },
+      });
+      return { briefing, results };
     });
 
-    if (!briefing || briefing.userId !== ctx.sub) {
+    if (!loaded) {
       throw new AppError(
         'RESOURCE_NOT_FOUND',
         `Briefing ${briefingId} not found`,
@@ -61,6 +75,8 @@ export async function POST(
         404,
       );
     }
+
+    const { briefing, results } = loaded;
 
     if (briefing.status !== 'ready') {
       throw new AppError(
@@ -70,20 +86,6 @@ export async function POST(
         409,
       );
     }
-
-    // Load selected briefing results with property + source data
-    const propertyIds = selectedProperties.map((p) => p.propertyId);
-
-    const results = await prisma.briefingResult.findMany({
-      where: { briefingId, propertyId: { in: propertyIds } },
-      include: {
-        property: {
-          include: {
-            sources: { orderBy: { scrapedAt: 'desc' }, take: 1 },
-          },
-        },
-      },
-    });
 
     if (results.length === 0) {
       throw new AppError(
@@ -175,25 +177,27 @@ export async function POST(
       });
     }
 
-    // Persist message record
-    const message = await prisma.message.create({
-      data: {
-        briefingId,
-        clientId: briefing.clientId,
-        formattedText,
-        deliveryMethod: 'clipboard',
-        deliveryStatus: 'pending',
-      },
-      select: {
-        id: true,
-        briefingId: true,
-        clientId: true,
-        formattedText: true,
-        deliveryMethod: true,
-        deliveryStatus: true,
-        createdAt: true,
-      },
-    });
+    // Persist message record under RLS
+    const message = await withRlsContext(ctx.sub, ctx.role, (tx) =>
+      tx.message.create({
+        data: {
+          briefingId,
+          clientId: briefing.clientId,
+          formattedText,
+          deliveryMethod: 'clipboard',
+          deliveryStatus: 'pending',
+        },
+        select: {
+          id: true,
+          briefingId: true,
+          clientId: true,
+          formattedText: true,
+          deliveryMethod: true,
+          deliveryStatus: true,
+          createdAt: true,
+        },
+      }),
+    );
 
     // Back-fill messageId on short links — non-critical side effect, log on failure
     prisma.shortLink.updateMany({
