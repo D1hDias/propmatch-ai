@@ -1,3 +1,4 @@
+import 'server-only';
 export { createPartnerSite, listPartnerSites, getPartnerSite, updatePartnerSite, disablePartnerSite } from './service';
 export { discoverPartnerSite } from './discovery';
 export { scrapePartnerSite } from './strategy';

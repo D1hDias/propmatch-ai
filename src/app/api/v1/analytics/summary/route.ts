@@ -64,6 +64,7 @@ export async function GET(req: NextRequest) {
         where: { userId, createdAt: { gte: twelveWeeksAgo } },
         select: { createdAt: true },
         orderBy: { createdAt: 'asc' },
+        take: 1000,
       });
 
       const weeklyBuckets: number[] = Array(12).fill(0);
@@ -86,6 +87,7 @@ export async function GET(req: NextRequest) {
       const clientsWithProfile = await tx.client.findMany({
         where: { userId, isGuest: false, archiveStatus: 'active' },
         select: { profile: true },
+        take: 500,
       });
 
       const neighborhoodCount: Record<string, number> = {};

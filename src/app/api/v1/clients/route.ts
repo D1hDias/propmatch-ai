@@ -24,6 +24,7 @@ export async function GET(req: NextRequest) {
         ...(crmStatus ? { crmStatus: crmStatus as never } : {}),
       },
       orderBy: { createdAt: 'desc' },
+      take: 500,
       select: {
         id: true,
         name: true,
