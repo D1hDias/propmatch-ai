@@ -1,9 +1,17 @@
 import 'server-only';
 import { logger } from '@/server/lib/logger';
+import { isSource2Enabled } from '@/server/lib/flags';
+import { scrapeCustomUrl } from './custom-url';
 import type { HealthStatus, NormalizedListing, SearchCriteria, SourceAdapter } from '../types';
 
 // ---------------------------------------------------------------------------
-// Health tracking (in-process, resets on restart)
+// Portal X adapter (Source 2) — powered by Firecrawl self-hosted.
+//
+// PORTAL_X_SEARCH_URL: the search-results URL for portal_x, with placeholders
+// that get replaced by criteria at runtime. If not set, adapter returns empty.
+//
+// Gated by ENABLE_SOURCE_2 (kill-switch). Disable without a code deploy by
+// setting ENABLE_SOURCE_2=false in the systemd EnvironmentFile.
 // ---------------------------------------------------------------------------
 
 const HEALTH_WINDOW = 100;
@@ -19,149 +27,40 @@ function successRate(): number {
   return results.filter(Boolean).length / results.length;
 }
 
-// ---------------------------------------------------------------------------
-// Scraper VPS client
-// Calls our dedicated scraper VPS via authenticated
-// internal REST API. The VPS URL and key come from env vars so we can
-// point dev at a local scraper without code changes.
-// ---------------------------------------------------------------------------
+function buildPortalXUrl(criteria: SearchCriteria): string | null {
+  const base = process.env.PORTAL_X_SEARCH_URL;
+  if (!base) return null;
 
-interface ScraperRequest {
-  portal: 'portal_x';
-  city: string;
-  neighborhood?: string | null;
-  propertyType?: string | null;
-  bedroomsMin?: number | null;
-  priceMin?: number | null;
-  priceMax?: number | null;
-  areaMin?: number | null;
-  purpose: 'buy' | 'rent';
-  maxPages: number;
+  // Replace simple placeholders if the operator configured a template URL.
+  // e.g. PORTAL_X_SEARCH_URL=https://portal.com/busca?cidade={city}&tipo={purpose}
+  return base
+    .replace('{city}', encodeURIComponent(criteria.city))
+    .replace('{purpose}', criteria.purpose === 'buy' ? 'venda' : 'aluguel')
+    .replace('{bedrooms}', String(criteria.bedroomsMin ?? ''))
+    .replace('{priceMax}', String(criteria.priceMax ?? ''));
 }
-
-interface ScraperListing {
-  externalId: string;
-  url: string;
-  title: string;
-  description: string;
-  photos: string[];
-  address: string;
-  neighborhood: string;
-  city: string;
-  state: string;
-  propertyType: string;
-  bedrooms: number | null;
-  bathrooms: number | null;
-  areaSqm: number | null;
-  parkingSpots: number | null;
-  price: number;
-  priceType: 'sale' | 'rent';
-  furnished: boolean | null;
-  amenities: string[];
-  lat: number | null;
-  lng: number | null;
-}
-
-interface ScraperResponse {
-  listings: ScraperListing[];
-  scrapedAt: string;
-}
-
-async function callScraperVps(criteria: SearchCriteria): Promise<ScraperListing[]> {
-  const scraperUrl = process.env.SCRAPER_VPS_URL;
-  const scraperKey = process.env.SCRAPER_VPS_INTERNAL_KEY;
-
-  if (!scraperUrl || !scraperKey) {
-    throw new Error('portal_x: SCRAPER_VPS_URL or SCRAPER_VPS_INTERNAL_KEY not configured');
-  }
-
-  const body: ScraperRequest = {
-    portal: 'portal_x',
-    city: criteria.city,
-    neighborhood: criteria.neighborhood,
-    propertyType: criteria.propertyType,
-    bedroomsMin: criteria.bedroomsMin,
-    priceMin: criteria.priceMin,
-    priceMax: criteria.priceMax,
-    areaMin: criteria.areaMin,
-    purpose: criteria.purpose,
-    maxPages: 3,
-  };
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 25_000);
-
-  try {
-    const res = await fetch(`${scraperUrl}/scrape`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Internal-Key': scraperKey,
-      },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
-
-    if (!res.ok) {
-      const text = await res.text().catch(() => '(no body)');
-      throw new Error(`portal_x scraper returned ${res.status}: ${text}`);
-    }
-
-    const data: ScraperResponse = await res.json();
-    return data.listings;
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Normalize scraper listing → NormalizedListing
-// ---------------------------------------------------------------------------
-
-function normalize(raw: ScraperListing, scrapedAt: string): NormalizedListing {
-  return {
-    source: 'portal_x',
-    externalId: raw.externalId,
-    url: raw.url,
-    title: raw.title,
-    description: raw.description,
-    photos: raw.photos,
-    address: raw.address,
-    neighborhood: raw.neighborhood,
-    city: raw.city,
-    state: raw.state,
-    propertyType: raw.propertyType,
-    bedrooms: raw.bedrooms,
-    bathrooms: raw.bathrooms,
-    areaSqm: raw.areaSqm,
-    parkingSpots: raw.parkingSpots,
-    price: raw.price,
-    priceType: raw.priceType,
-    furnished: raw.furnished,
-    amenities: raw.amenities,
-    extractedAmenities: {},
-    geohash7: null,
-    lat: raw.lat,
-    lng: raw.lng,
-    scrapedAt,
-  };
-}
-
-// ---------------------------------------------------------------------------
-// PortalX adapter
-// ---------------------------------------------------------------------------
 
 export const portalXAdapter: SourceAdapter = {
   name: 'portal_x',
 
   async search(criteria: SearchCriteria): Promise<NormalizedListing[]> {
-    logger.info('portal_x search', { city: criteria.city, purpose: criteria.purpose });
+    if (!isSource2Enabled()) {
+      logger.debug('portal_x: ENABLE_SOURCE_2 is off — skipping');
+      return [];
+    }
+
+    const url = buildPortalXUrl(criteria);
+    if (!url) {
+      logger.warn('portal_x: PORTAL_X_SEARCH_URL not configured — returning empty');
+      return [];
+    }
+
+    logger.info('portal_x search', { url, city: criteria.city });
 
     try {
-      const raw = await callScraperVps(criteria);
-      const scrapedAt = new Date().toISOString();
-      const listings = raw.map((r) => normalize(r, scrapedAt));
-      recordResult(true);
+      const { listings, error } = await scrapeCustomUrl(url, criteria);
+      recordResult(!error);
+      if (error) logger.warn('portal_x scrape partial error', { error });
       logger.info('portal_x returned', { count: listings.length });
       return listings;
     } catch (err) {
@@ -178,7 +77,7 @@ export const portalXAdapter: SourceAdapter = {
       healthy: rate >= 0.8,
       successRate: rate,
       lastCheckedAt: new Date().toISOString(),
-      message: rate < 0.8 ? 'Success rate below 80% — scraper VPS may be unhealthy' : undefined,
+      message: rate < 0.8 ? 'Success rate below 80% — Firecrawl or portal may be degraded' : undefined,
     };
   },
 };

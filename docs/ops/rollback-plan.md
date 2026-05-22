@@ -99,18 +99,21 @@ curl http://localhost:3100/health
 
 ## Rollback de feature flags
 
-Para desativar uma fonte sem rollback completo:
+Para desativar uma fonte sem rollback completo (não requer rebuild):
 
 ```bash
-# Desativar Source 2 (portal_x)
-# Remover SCRAPER_VPS_URL do EnvironmentFile e recarregar
-sudo systemctl edit --force propmatch  # remover SCRAPER_VPS_URL
-sudo systemctl daemon-reload
+# Desativar Source 2 — Firecrawl scraping (portal_x, custom URLs)
+sudo nano /etc/propmatch/env
+# Adicionar ou alterar: ENABLE_SOURCE_2=false
 sudo systemctl restart propmatch
 
-# Desativar Source 3 (partner_b)
-# Setar FEATURE_SOURCE_PARTNER_B=false e recarregar
+# Desativar Source 3 — Partner B API
+sudo nano /etc/propmatch/env
+# Adicionar ou alterar: ENABLE_SOURCE_3=false
+sudo systemctl restart propmatch
 ```
+
+Ambas as flags são verificadas em runtime — sem rebuild necessário.
 
 ---
 
@@ -132,6 +135,23 @@ sudo systemctl restart propmatch
 - [ ] BetterStack alerta resolvido
 - [ ] Post-mortem agendado em < 48h
 - [ ] Causa raiz identificada antes do próximo deploy
+
+---
+
+## Teste do procedimento (drill obrigatório pré-launch)
+
+Executar em staging **antes do launch** e **a cada 30 dias** após:
+
+```bash
+# 1. Deploy de um commit ruim intencional em staging
+# 2. Confirmar que BetterStack alerta em < 2 min
+# 3. Executar passos 1-4 do procedimento acima e cronometrar
+# 4. Meta: < 5 minutos do alerta ao health check verde
+```
+
+| Data | Ambiente | Tempo medido | Responsável | OK? |
+|------|----------|-------------|-------------|-----|
+| — | staging | — | — | — |
 
 ---
 

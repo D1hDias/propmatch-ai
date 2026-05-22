@@ -1,5 +1,6 @@
 import 'server-only';
 import { logger } from '@/server/lib/logger';
+import { isSource3Enabled } from '@/server/lib/flags';
 import type { HealthStatus, NormalizedListing, SearchCriteria, SourceAdapter } from '../types';
 
 // ---------------------------------------------------------------------------
@@ -133,6 +134,11 @@ export const partnerBAdapter: SourceAdapter = {
   name: 'partner_b',
 
   async search(criteria: SearchCriteria): Promise<NormalizedListing[]> {
+    if (!isSource3Enabled()) {
+      logger.debug('partner_b: ENABLE_SOURCE_3 is off — skipping');
+      return [];
+    }
+
     const baseUrl = process.env.PARTNER_B_API_URL;
     const apiKey = process.env.PARTNER_B_API_KEY;
 

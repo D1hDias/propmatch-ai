@@ -23,3 +23,16 @@ export function isSource2Enabled(): boolean {
   // Auto-enable when Firecrawl is configured
   return Boolean(process.env.FIRECRAWL_API_KEY);
 }
+
+/**
+ * ENABLE_SOURCE_3 — activates Partner B API (Source 3).
+ *
+ * OFF by default — only enable after LOI is signed and contract is in force
+ * (OPS-13). Toggling to true wires partner_b into the search pipeline.
+ *
+ * Env: ENABLE_SOURCE_3=true|false  (default: false)
+ */
+export function isSource3Enabled(): boolean {
+  const env = process.env.ENABLE_SOURCE_3;
+  return env === 'true' || env === '1';
+}
