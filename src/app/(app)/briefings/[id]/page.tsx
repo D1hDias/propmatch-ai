@@ -81,11 +81,11 @@ export default function BriefingDetailPage({ params }: Props) {
       {/* Breadcrumb / nav */}
       <div className="flex items-center justify-between">
         <Link
-          href="/briefings"
+          href="/historico"
           className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
         >
           <ArrowLeft className="w-4 h-4" />
-          Todos os briefings
+          Histórico
         </Link>
         <Button asChild size="sm" variant="outline" className="gap-1.5">
           <Link href="/briefings/new">

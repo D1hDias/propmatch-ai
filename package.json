@@ -65,6 +65,7 @@
     "require-in-the-middle": "^8.0.1",
     "resend": "^6.12.2",
     "server-only": "^0.0.1",
+    "sonner": "^2.0.7",
     "stripe": "^22.1.0",
     "tailwind-merge": "^2.5.4",
     "tailwindcss-animate": "^1.0.7",

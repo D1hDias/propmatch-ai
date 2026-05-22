@@ -1,8 +1,8 @@
 import 'server-only';
-import FirecrawlApp from '@mendable/firecrawl-js';
 import { logger } from '@/server/lib/logger';
 import { callLLM } from '@/server/lib/llm';
 import { MODELS } from '@/server/lib/models';
+import { getFirecrawl, acquireRateLimit } from './firecrawl-client';
 import type { NormalizedListing, SearchCriteria } from './types';
 
 // ---------------------------------------------------------------------------
@@ -34,17 +34,6 @@ import type { NormalizedListing, SearchCriteria } from './types';
 //       array in the page HTML. Filters in-code by bairro + price, then
 //       scrapes individual listing pages.
 // ---------------------------------------------------------------------------
-
-let _firecrawl: FirecrawlApp | null = null;
-
-function getFirecrawl(): FirecrawlApp {
-  if (!_firecrawl) {
-    const apiKey = process.env.FIRECRAWL_API_KEY;
-    if (!apiKey) throw new Error('FIRECRAWL_API_KEY not set');
-    _firecrawl = new FirecrawlApp({ apiKey, apiUrl: process.env.FIRECRAWL_API_URL });
-  }
-  return _firecrawl;
-}
 
 // ---------------------------------------------------------------------------
 // Raw Firecrawl listing → NormalizedListing
@@ -127,6 +116,7 @@ async function scrapeSearchPage(
 ): Promise<NormalizedListing[]> {
   logger.info('site_scraper_search_page_start', { domain, searchUrl });
 
+  await acquireRateLimit(searchUrl);
   const firecrawl = getFirecrawl();
   const result = await firecrawl.scrape(searchUrl, {
     formats: ['markdown', 'links'],
@@ -231,6 +221,7 @@ async function scrapeIndividualPages(
 
     const settled = await Promise.allSettled(
       chunk.map(async (url) => {
+        await acquireRateLimit(url);
         const res = await firecrawl.scrape(url, {
           formats: ['markdown'],
           onlyMainContent: false,

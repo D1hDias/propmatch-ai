@@ -1,22 +1,11 @@
 import 'server-only';
-import FirecrawlApp from '@mendable/firecrawl-js';
 import { z } from 'zod';
 import { getCityUF } from './city-lookup';
 import { logger } from '@/server/lib/logger';
+import { getFirecrawl, acquireRateLimit } from './firecrawl-client';
 import type { NormalizedListing, SearchCriteria } from './types';
 import { extractAmenities } from './amenity-extractor';
 import { scrapeHtmlListings } from './html-scraper';
-
-let _firecrawl: FirecrawlApp | null = null;
-
-function getFirecrawl(): FirecrawlApp {
-  if (!_firecrawl) {
-    const apiKey = process.env.FIRECRAWL_API_KEY;
-    if (!apiKey) throw new Error('FIRECRAWL_API_KEY env var is not set');
-    _firecrawl = new FirecrawlApp({ apiKey, apiUrl: process.env.FIRECRAWL_API_URL });
-  }
-  return _firecrawl;
-}
 
 // ---------------------------------------------------------------------------
 // Schema for a single property listing
@@ -268,6 +257,7 @@ export async function scrapeWithFirecrawl(
   source: 'zap' | 'vivareal',
   criteria: SearchCriteria,
 ): Promise<NormalizedListing[]> {
+  await acquireRateLimit(url);
   logger.info('firecrawl scrape start', { url, source });
 
   // Firecrawl renders the page AND extracts structured JSON using its own built-in AI.
@@ -343,6 +333,7 @@ export async function mapAndScrapeWithFirecrawl(
   maxSearchPages = 2,
   maxListingPages = 3,
 ): Promise<NormalizedListing[]> {
+  await acquireRateLimit(url);
   logger.info('firecrawl map start', { url, source });
 
   try {

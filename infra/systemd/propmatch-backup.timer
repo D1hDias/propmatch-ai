@@ -1,0 +1,11 @@
+[Unit]
+Description=PropMatch AI — pgBackRest backup (daily at 03:00 BRT)
+
+[Timer]
+# 06:00 UTC = 03:00 BRT (America/Sao_Paulo, UTC-3)
+OnCalendar=*-*-* 06:00:00 UTC
+RandomizedDelaySec=300
+Persistent=true
+
+[Install]
+WantedBy=timers.target

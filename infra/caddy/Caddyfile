@@ -29,7 +29,18 @@ propmatch.com.br {
   }
   header @static {
     Cache-Control "public, max-age=31536000, immutable"
-    # Permite que Cloudflare faça cache no edge
+    Vary "Accept-Encoding"
+  }
+
+  # ------------------------------------------------------------------
+  # Imagens otimizadas pelo Next.js (_next/image) — TTL moderado
+  # Next.js usa query string com hash; Cloudflare deve fazer cache.
+  # ------------------------------------------------------------------
+  @nextimage {
+    path /_next/image*
+  }
+  header @nextimage {
+    Cache-Control "public, max-age=86400, stale-while-revalidate=3600"
     Vary "Accept-Encoding"
   }
 
@@ -47,15 +58,15 @@ propmatch.com.br {
 
   # ------------------------------------------------------------------
   # SSE endpoints — nunca fazer cache, desabilitar buffering
+  # Cloudflare respeita Cache-Control: no-store para bypass automático.
   # ------------------------------------------------------------------
   @sse {
     path /api/v1/briefings/*/stream
   }
   header @sse {
-    Cache-Control "no-store"
+    Cache-Control "no-store, no-transform"
     X-Accel-Buffering "no"
-    # Instrui Cloudflare a não fazer cache nem buffer do SSE
-    CF-Cache-Status "BYPASS"
+    Content-Type "text/event-stream"
   }
 
   # ------------------------------------------------------------------
@@ -89,6 +100,8 @@ propmatch.com.br {
     X-Frame-Options "DENY"
     Referrer-Policy "strict-origin-when-cross-origin"
     Permissions-Policy "camera=(), microphone=(), geolocation=()"
+    # HSTS: 1 ano, incluir subdomínios — só ativar após confirmar HTTPS estável
+    Strict-Transport-Security "max-age=31536000; includeSubDomains"
   }
 
   # Logs estruturados compatíveis com BetterStack
@@ -104,4 +117,10 @@ propmatch.com.br {
 # Redireciona www → apex
 www.propmatch.com.br {
   redir https://propmatch.com.br{uri} permanent
+}
+
+# OPS-15: Status page — redireciona para BetterStack hosted status page
+# Configurar BETTER_STACK_STATUS_URL após criar a status page no painel BetterStack.
+status.propmatch.com.br {
+  redir https://propmatch.betteruptime.com permanent
 }

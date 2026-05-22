@@ -2,17 +2,17 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { Plus, CheckCircle, AlertCircle, Loader } from 'lucide-react';
+import { Search, Loader, CheckCircle, AlertCircle, ArrowRight, ScanSearch } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
-import { EmptyBriefingsState } from '@/components/briefings/BriefingForm';
+import { EmptyState } from '@/components/ui/empty-state';
 import { apiFetch } from '@/lib/api-fetch';
+import { toastError } from '@/lib/toast';
 
 const STATUS_CONFIG = {
-  ready: { label: 'Pronto', icon: CheckCircle, className: 'text-success' },
-  extracting: { label: 'Extraindo', icon: Loader, className: 'text-secondary animate-spin' },
-  searching: { label: 'Buscando', icon: Loader, className: 'text-secondary animate-spin' },
-  failed: { label: 'Falhou', icon: AlertCircle, className: 'text-danger' },
+  ready: { label: 'Pronto para revisar', icon: CheckCircle, className: 'text-success', bg: 'bg-success/10' },
+  extracting: { label: 'Extraindo critérios…', icon: Loader, className: 'text-secondary animate-spin', bg: 'bg-secondary/10' },
+  searching: { label: 'Buscando imóveis…', icon: Loader, className: 'text-primary animate-spin', bg: 'bg-primary/10' },
+  failed: { label: 'Falhou', icon: AlertCircle, className: 'text-danger', bg: 'bg-danger/10' },
 } as const;
 
 type Briefing = {
@@ -25,121 +25,107 @@ type Briefing = {
 };
 
 export default function BriefingsPage() {
-  const [briefings, setBriefings] = useState<Briefing[]>([]);
-  const [total, setTotal] = useState(0);
+  const [active, setActive] = useState<Briefing[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     apiFetch('/api/v1/briefings?per_page=50')
       .then((r) => r.json())
-      .then((d: { items?: Briefing[]; total?: number; error?: unknown }) => {
-        if (!d.error) {
-          setBriefings(d.items ?? []);
-          setTotal(d.total ?? 0);
+      .then((d: { items?: Briefing[]; error?: unknown }) => {
+        if (d.error) {
+          toastError('Não foi possível carregar os briefings.');
+        } else {
+          setActive(
+            (d.items ?? []).filter(
+              (b) => b.status === 'extracting' || b.status === 'searching' || b.status === 'ready',
+            ),
+          );
         }
       })
-      .catch(() => {})
+      .catch(() => toastError('Erro ao conectar com o servidor.'))
       .finally(() => setLoading(false));
   }, []);
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-2xl font-bold text-foreground">Briefings</h2>
-          <p className="text-muted-foreground mt-1">
-            {loading ? 'Carregando…' : total > 0 ? `${total} briefings encontrados` : 'Nenhum briefing ainda'}
+    <div className="space-y-8">
+      <div>
+        <h2 className="text-2xl font-bold text-foreground">Briefings</h2>
+        <p className="text-muted-foreground mt-1">Buscas em andamento e prontas para revisão.</p>
+      </div>
+
+      {/* Quick action */}
+      <div className="bg-card rounded-xl shadow-card p-6 flex flex-col sm:flex-row items-start sm:items-center gap-4">
+        <div className="flex-1">
+          <h3 className="font-semibold text-foreground">Iniciar nova busca</h3>
+          <p className="text-sm text-muted-foreground mt-0.5">
+            Cole o briefing do cliente e deixe a IA extrair os critérios automaticamente.
           </p>
         </div>
-        <Button asChild className="gap-2">
-          <Link href="/briefings/new">
-            <Plus className="w-4 h-4" />
-            Novo briefing
+        <Button asChild className="gap-2 shrink-0">
+          <Link href="/busca">
+            <Search className="w-4 h-4" />
+            Nova busca
           </Link>
         </Button>
       </div>
 
-      {loading ? (
-        <div className="space-y-3">
-          {Array.from({ length: 3 }).map((_, i) => (
-            <div key={i} className="h-16 bg-skeleton rounded-xl animate-pulse" />
-          ))}
-        </div>
-      ) : briefings.length === 0 ? (
-        <EmptyBriefingsState />
-      ) : (
-        <div className="bg-card rounded-xl shadow-card overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-border bg-muted/40">
-                  <th className="text-left px-6 py-3.5 text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-                    Briefing
-                  </th>
-                  <th className="text-left px-6 py-3.5 text-xs font-semibold text-muted-foreground uppercase tracking-wide hidden sm:table-cell">
-                    Confiança
-                  </th>
-                  <th className="text-left px-6 py-3.5 text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-                    Status
-                  </th>
-                  <th className="text-left px-6 py-3.5 text-xs font-semibold text-muted-foreground uppercase tracking-wide hidden md:table-cell">
-                    Data
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {briefings.map((briefing, idx) => {
-                  const cfg = STATUS_CONFIG[briefing.status] ?? STATUS_CONFIG.failed;
-                  const Icon = cfg.icon;
-                  const confidence = briefing.extractionConfidence;
-                  return (
-                    <tr
-                      key={briefing.id}
-                      className={`border-b border-border last:border-0 hover:bg-muted/30 transition-colors ${idx % 2 !== 0 ? 'bg-muted/10' : ''}`}
-                    >
-                      <td className="px-6 py-4">
-                        <Link
-                          href={`/briefings/${briefing.id}`}
-                          className="font-medium text-foreground hover:text-primary transition-colors line-clamp-2 max-w-xs block"
-                        >
-                          {briefing.rawText}
-                        </Link>
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap hidden sm:table-cell">
-                        {confidence != null ? (
-                          <Badge
-                            variant="secondary"
-                            className={
-                              confidence >= 0.85
-                                ? 'bg-success/10 text-success hover:bg-success/10'
-                                : confidence >= 0.8
-                                  ? 'bg-warning/10 text-warning hover:bg-warning/10'
-                                  : 'bg-danger/10 text-danger hover:bg-danger/10'
-                            }
-                          >
-                            {Math.round(confidence * 100)}%
-                          </Badge>
-                        ) : (
-                          <span className="text-muted-foreground">—</span>
-                        )}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <span className={`flex items-center gap-1.5 font-medium ${cfg.className}`}>
-                          <Icon className="w-4 h-4" />
-                          {cfg.label}
-                        </span>
-                      </td>
-                      <td className="px-6 py-4 text-muted-foreground whitespace-nowrap hidden md:table-cell">
-                        {new Date(briefing.createdAt).toLocaleDateString('pt-BR')}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+      {/* Active briefings */}
+      <div className="space-y-3">
+        <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">Em andamento</h3>
+
+        {loading ? (
+          <div className="space-y-3">
+            {Array.from({ length: 3 }).map((_, i) => (
+              <div key={i} className="h-20 skeleton rounded-xl" />
+            ))}
           </div>
-        </div>
-      )}
+        ) : active.length === 0 ? (
+          <div className="bg-card rounded-xl shadow-card">
+            <EmptyState
+              icon={ScanSearch}
+              title="Nenhuma busca ativa"
+              description="Todas as buscas foram concluídas. Inicie uma nova ou consulte o histórico."
+              action={
+                <Button variant="outline" asChild size="sm">
+                  <Link href="/historico">Ver histórico completo</Link>
+                </Button>
+              }
+            />
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {active.map((briefing, i) => {
+              const cfg = STATUS_CONFIG[briefing.status] ?? STATUS_CONFIG.failed;
+              const Icon = cfg.icon;
+              return (
+                <Link
+                  key={briefing.id}
+                  href={`/briefings/${briefing.id}`}
+                  className="bg-card rounded-xl shadow-card p-4 flex items-center gap-4 hover:bg-muted/30 transition-colors group animate-fade-in-up card-hover block"
+                  style={{ animationDelay: `${i * 50}ms` }}
+                >
+                  <div className={`w-9 h-9 rounded-lg ${cfg.bg} flex items-center justify-center shrink-0`}>
+                    <Icon className={`w-4 h-4 ${cfg.className}`} />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="font-medium text-foreground line-clamp-1">{briefing.rawText}</p>
+                    <p className="text-xs text-muted-foreground mt-0.5">{cfg.label}</p>
+                  </div>
+                  <ArrowRight className="w-4 h-4 text-muted-foreground group-hover:text-foreground transition-colors shrink-0" />
+                </Link>
+              );
+            })}
+          </div>
+        )}
+
+        {active.length > 0 && (
+          <div className="pt-1">
+            <Link href="/historico" className="text-sm text-primary hover:underline">
+              Ver histórico completo →
+            </Link>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

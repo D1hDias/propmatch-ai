@@ -1,5 +1,6 @@
 import 'server-only';
-import { prisma } from '@/server/db/client';
+import { prisma, withRlsContext } from '@/server/db/client';
+import type { Prisma } from '@prisma/client';
 import { extractBriefing } from './extract';
 import { toSearchCriteria } from './criteria-transform';
 import { hitlQueue } from './hitl-queue';
@@ -8,33 +9,39 @@ import { logger } from '@/server/lib/logger';
 import type { CreateBriefingInput } from '@/lib/schemas/briefing';
 import type { SearchCriteria } from '@/server/search/types';
 
+// PRD §6.3 US-01 AC3: auto-approve threshold and low-confidence band (0.80–0.85)
 const CONFIDENCE_AUTO_APPROVE = 0.85;
-const CONFIDENCE_AUTO_APPROVE_WITH_OVERRIDE = 0.65;
+const CONFIDENCE_LOW_CONFIDENCE = 0.80; // below this → HITL (or overflow broker edit)
+
+// PRD §5.6: overflow when queue p95 exceeds 10min — use waiting count as proxy
+const HITL_OVERFLOW_THRESHOLD = 50;
 
 /**
  * Creates a briefing, persists it, then runs LLM extraction in the background.
  * Returns the briefing ID immediately so the client can poll/stream status.
+ * Uses withRlsContext so Postgres RLS policies apply to the INSERT (ADR-0005).
  */
 export async function createBriefing(
   userId: string,
+  userRole: string,
   input: CreateBriefingInput,
 ): Promise<string> {
   const purgeAt = new Date(Date.now() + 18 * 30 * 24 * 60 * 60 * 1000); // ~18 months
 
-  // Resolve clientId — if none provided, create a guest client automatically
-  const clientId = input.client_id ?? await createGuestClient(userId);
-
-  const briefing = await prisma.briefing.create({
-    data: {
-      userId,
-      clientId,
-      rawText: input.raw_text,
-      rawTextPurgeAt: purgeAt,
-      selectedPortals: input.partner_site_ids ?? [],
-      customUrls: input.custom_urls ?? [],
-      status: 'extracting',
-      reviewStatus: 'pending',
-    },
+  const briefing = await withRlsContext(userId, userRole, async (tx) => {
+    const clientId = input.client_id ?? await createGuestClient(userId, tx);
+    return tx.briefing.create({
+      data: {
+        userId,
+        clientId,
+        rawText: input.raw_text,
+        rawTextPurgeAt: purgeAt,
+        selectedPortals: input.partner_site_ids ?? [],
+        customUrls: input.custom_urls ?? [],
+        status: 'extracting',
+        reviewStatus: 'pending',
+      },
+    });
   });
 
   // When structured_criteria is provided (Categories tab), bypass LLM extraction
@@ -140,32 +147,54 @@ async function runExtraction(
       neighborhoods: result.criteria.location?.neighborhoods,
     });
 
-    let reviewStatus: 'not_required' | 'pending' | 'approved';
-    let reviewMode: 'auto_approved' | 'hitl' | null;
+    let reviewStatus: 'not_required' | 'pending' | 'approved' | 'overflow_broker_edit';
+    let reviewMode: 'auto_approved' | 'hitl' | 'broker_direct_edit' | null;
 
-    if (!hasCritical || confidence < CONFIDENCE_AUTO_APPROVE_WITH_OVERRIDE) {
-      // Route to HITL — update to 'ready' so the UI shows extraction result
-      reviewStatus = 'pending';
-      reviewMode = 'hitl';
+    if (!hasCritical || confidence < CONFIDENCE_LOW_CONFIDENCE) {
+      // Check HITL queue depth — PRD §5.6 overflow rules
+      const queueDepth = await hitlQueue.getWaitingCount();
+      const isOverflow = queueDepth >= HITL_OVERFLOW_THRESHOLD;
 
-      await prisma.hitlMetric.create({ data: { briefingId } });
-      await hitlQueue.add('review', {
-        briefingId,
-        userId: (await prisma.briefing.findUniqueOrThrow({ where: { id: briefingId }, select: { userId: true } })).userId,
-        confidence,
-        missingFields: result.missingCriticalFields,
-      });
+      if (isOverflow) {
+        // Tier 2 overflow: surface directly to broker for editing (PRD §5.6 Tier 2)
+        reviewStatus = 'overflow_broker_edit';
+        reviewMode = 'broker_direct_edit';
+        logger.warn('hitl_overflow_broker_direct_edit', { briefingId, queueDepth, confidence });
 
-      await prisma.briefing.update({
-        where: { id: briefingId },
-        data: {
-          extractedCriteria: result.criteria as object,
-          extractionConfidence: result.confidence,
-          reviewStatus,
-          reviewMode,
-          status: 'ready',
-        },
-      });
+        await prisma.briefing.update({
+          where: { id: briefingId },
+          data: {
+            extractedCriteria: result.criteria as object,
+            extractionConfidence: result.confidence,
+            reviewStatus,
+            reviewMode,
+            status: 'ready',
+          },
+        });
+      } else {
+        // Normal HITL path
+        reviewStatus = 'pending';
+        reviewMode = 'hitl';
+
+        await prisma.hitlMetric.create({ data: { briefingId } });
+        await hitlQueue.add('review', {
+          briefingId,
+          userId: (await prisma.briefing.findUniqueOrThrow({ where: { id: briefingId }, select: { userId: true } })).userId,
+          confidence,
+          missingFields: result.missingCriticalFields,
+        });
+
+        await prisma.briefing.update({
+          where: { id: briefingId },
+          data: {
+            extractedCriteria: result.criteria as object,
+            extractionConfidence: result.confidence,
+            reviewStatus,
+            reviewMode,
+            status: 'ready',
+          },
+        });
+      }
     } else {
       // Auto-approved: start search immediately
       reviewStatus = confidence >= CONFIDENCE_AUTO_APPROVE ? 'not_required' : 'approved';
@@ -245,14 +274,14 @@ export async function listBriefings(userId: string, page = 1, perPage = 20) {
   return { items, total, page, perPage };
 }
 
-async function createGuestClient(userId: string): Promise<string> {
+async function createGuestClient(userId: string, tx: Prisma.TransactionClient): Promise<string> {
   const today = new Date().toLocaleDateString('pt-BR', {
     timeZone: 'America/Sao_Paulo',
     day: '2-digit',
     month: '2-digit',
     year: 'numeric',
   });
-  const client = await prisma.client.create({
+  const client = await tx.client.create({
     data: {
       userId,
       name: `Guest – ${today}`,

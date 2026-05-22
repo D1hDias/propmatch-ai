@@ -1,12 +1,15 @@
 import type { NextRequest } from 'next/server';
 import { requireAuth } from '@/server/auth/context';
-import { withRlsContext } from '@/server/db/client';
+import { prisma, withRlsContext } from '@/server/db/client';
 import { createBriefingSchema } from '@/lib/schemas/briefing';
 import { createBriefing } from '@/server/briefings/service';
 import { AppError } from '@/server/lib/errors';
 import { apiSuccess, apiError } from '@/server/lib/response';
 
 export const dynamic = 'force-dynamic';
+
+// PRD §7.3: concurrent search limits per plan (Free=1, Starter=3, Pro=10)
+const CONCURRENCY_LIMITS: Record<string, number> = { free: 1, starter: 3, pro: 10 };
 
 // POST /api/v1/briefings
 export async function POST(req: NextRequest) {
@@ -25,7 +28,21 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const briefingId = await createBriefing(ctx.sub, parsed.data);
+    // Concurrency cap — count briefings currently in 'searching' state for this user
+    const limit = CONCURRENCY_LIMITS[ctx.plan] ?? 1;
+    const activeSearches = await withRlsContext(ctx.sub, ctx.role, (tx) =>
+      tx.briefing.count({ where: { userId: ctx.sub, status: 'searching' } }),
+    );
+    if (activeSearches >= limit) {
+      throw new AppError(
+        'CONCURRENCY_EXCEEDED',
+        `User ${ctx.sub} already has ${activeSearches} active searches (limit: ${limit})`,
+        `Você já tem ${activeSearches} busca${activeSearches > 1 ? 's' : ''} rodando. Aguarde uma terminar para iniciar outra.`,
+        429,
+      );
+    }
+
+    const briefingId = await createBriefing(ctx.sub, ctx.role, parsed.data);
     return apiSuccess({ id: briefingId, status: 'extracting' }, 202);
   } catch (err) {
     return apiError(err);
