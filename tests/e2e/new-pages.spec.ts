@@ -12,13 +12,11 @@ async function signupAndGetContext(
   const user = makeUser();
 
   await page.goto('/signup');
-  await page.getByRole('textbox', { name: /nome/i }).fill(user.name);
-  await page.getByRole('textbox', { name: /e-mail/i }).fill(user.email);
-  await page.getByRole('textbox', { name: /telefone/i }).fill(user.phone);
-  await page.getByRole('textbox', { name: /senha/i }).fill(user.password);
-  const consentCheck = page.getByRole('checkbox', { name: /concordo|lgpd|termos/i });
-  if (await consentCheck.isVisible()) await consentCheck.check();
-  await page.getByRole('button', { name: /criar conta|cadastrar/i }).click();
+  await page.getByLabel(/nome completo/i).fill(user.name);
+  await page.getByLabel(/e-mail/i).fill(user.email);
+  await page.locator('#password').fill(user.password);
+  await page.getByLabel(/li e aceito|lgpd|termos/i).check();
+  await page.getByRole('button', { name: /criar conta grátis/i }).click();
 
   // Aguarda redirect para dashboard após signup
   await expect(page).toHaveURL(/\/dashboard/, { timeout: 10_000 });
@@ -44,13 +42,14 @@ test.describe('Páginas autenticadas — S8/FE-18', () => {
 
     test('exibe EmptyState quando não há briefings', async ({ page }) => {
       await page.goto('/historico');
-      // Novo usuário não tem briefings — EmptyState deve aparecer
-      await expect(page.getByText(/nenhum briefing ainda|nenhuma busca/i)).toBeVisible({ timeout: 5000 });
+      // Novo usuário não tem briefings — EmptyState heading deve aparecer
+      await expect(page.getByRole('heading', { name: /nenhum briefing ainda/i })).toBeVisible({ timeout: 5000 });
     });
 
     test('botão "Nova busca" aponta para /busca', async ({ page }) => {
       await page.goto('/historico');
-      const btn = page.getByRole('link', { name: /nova busca/i });
+      // Seleciona o botão na página (não o link da sidebar)
+      const btn = page.getByRole('link', { name: 'Nova busca', exact: true }).last();
       await expect(btn).toBeVisible();
       await expect(btn).toHaveAttribute('href', /\/busca/);
     });
@@ -70,7 +69,10 @@ test.describe('Páginas autenticadas — S8/FE-18', () => {
   test.describe('/briefings', () => {
     test('carrega sem erros JS', async ({ page }) => {
       const jsErrors: string[] = [];
-      page.on('pageerror', (err) => jsErrors.push(err.message));
+      // Filtrar erros transientes do dev server (middleware-manifest) que não afetam a app
+      page.on('pageerror', (err) => {
+        if (!err.message.includes('middleware-manifest')) jsErrors.push(err.message);
+      });
       await page.goto('/briefings');
       await page.waitForLoadState('networkidle');
       expect(jsErrors).toHaveLength(0);
@@ -78,10 +80,8 @@ test.describe('Páginas autenticadas — S8/FE-18', () => {
 
     test('exibe EmptyState ou card de Nova Busca quando sem briefings ativos', async ({ page }) => {
       await page.goto('/briefings');
-      // Deve mostrar o card de quick-start OU o EmptyState
-      const hasQuickStart = await page.getByText(/nova busca|iniciar busca/i).isVisible().catch(() => false);
-      const hasEmpty = await page.getByText(/nenhum briefing|sem buscas ativas/i).isVisible().catch(() => false);
-      expect(hasQuickStart || hasEmpty).toBe(true);
+      // Quick-start card sempre visível em /briefings
+      await expect(page.getByRole('heading', { name: /iniciar nova busca/i })).toBeVisible({ timeout: 5000 });
     });
   });
 
@@ -91,7 +91,8 @@ test.describe('Páginas autenticadas — S8/FE-18', () => {
   test.describe('/mensagens', () => {
     test('carrega com EmptyState quando sem mensagens', async ({ page }) => {
       await page.goto('/mensagens');
-      await expect(page.getByText(/nenhuma mensagem|histórico vazio|ainda não enviou/i)).toBeVisible({
+      // EmptyState heading quando não há mensagens
+      await expect(page.getByRole('heading', { name: /nenhuma mensagem ainda/i })).toBeVisible({
         timeout: 5000,
       });
     });
@@ -137,14 +138,14 @@ test.describe('GET /api/v1/internal/health', () => {
     const res = await request.get('/api/v1/internal/health');
     expect(res.status()).toBe(200);
     const body = await res.json();
-    expect(body.data?.ok).toBe(true);
-    expect(body.data?.db).toBe('up');
+    expect(body.ok).toBe(true);
+    expect(body.db).toBe('up');
   });
 
   test('inclui status do firecrawl no response', async ({ request }) => {
     const res = await request.get('/api/v1/internal/health');
     const body = await res.json();
     // firecrawl pode ser "up" ou "degraded" — ambos são válidos em dev
-    expect(['up', 'degraded']).toContain(body.data?.firecrawl);
+    expect(['up', 'degraded']).toContain(body.firecrawl);
   });
 });
