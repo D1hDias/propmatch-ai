@@ -35,7 +35,7 @@ export async function PATCH(
   { params }: { params: Promise<{ id: string }> },
 ) {
   try {
-    const ctx = await requireAuth(req);
+    await requireAuth(req);
     const { id } = await params;
     const parsed = patchSchema.safeParse(await req.json());
     if (!parsed.success) {
@@ -54,7 +54,7 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> },
 ) {
   try {
-    const ctx = await requireAuth(req);
+    await requireAuth(req);
     const { id } = await params;
     await disablePartnerSite(id);
     return apiSuccess({ disabled: true });

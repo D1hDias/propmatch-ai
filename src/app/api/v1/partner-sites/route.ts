@@ -16,7 +16,7 @@ const createSchema = z.object({
 // GET /api/v1/partner-sites — list active partner sites for the authenticated user
 export async function GET(req: NextRequest) {
   try {
-    const ctx = await requireAuth(req);
+    await requireAuth(req);
     const sites = await listPartnerSites();
     return apiSuccess({ data: sites });
   } catch (err) {
@@ -27,7 +27,7 @@ export async function GET(req: NextRequest) {
 // POST /api/v1/partner-sites — create a new partner site
 export async function POST(req: NextRequest) {
   try {
-    const ctx = await requireAuth(req);
+    await requireAuth(req);
     const parsed = createSchema.safeParse(await req.json());
     if (!parsed.success) {
       throw new AppError('VALIDATION_FAILED', parsed.error.message, 'Dados inválidos.', 400);

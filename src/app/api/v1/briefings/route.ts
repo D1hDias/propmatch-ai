@@ -1,6 +1,6 @@
 import type { NextRequest } from 'next/server';
 import { requireAuth } from '@/server/auth/context';
-import { prisma, withRlsContext } from '@/server/db/client';
+import { withRlsContext } from '@/server/db/client';
 import { createBriefingSchema } from '@/lib/schemas/briefing';
 import { createBriefing } from '@/server/briefings/service';
 import { AppError } from '@/server/lib/errors';

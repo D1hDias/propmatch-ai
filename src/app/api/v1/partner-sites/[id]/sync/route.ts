@@ -15,7 +15,7 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> },
 ) {
   try {
-    const ctx = await requireAuth(req);
+    await requireAuth(req);
     const { id } = await params;
 
     // Verify site exists on the platform
