@@ -27,7 +27,7 @@ export async function GET(req: NextRequest) {
 // POST /api/v1/partner-sites — create a new partner site
 export async function POST(req: NextRequest) {
   try {
-    await requireAuth(req);
+    const ctx = await requireAuth(req);
     const parsed = createSchema.safeParse(await req.json());
     if (!parsed.success) {
       throw new AppError('VALIDATION_FAILED', parsed.error.message, 'Dados inválidos.', 400);
