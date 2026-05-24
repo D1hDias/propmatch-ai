@@ -1,7 +1,7 @@
 import 'server-only';
 import { logger } from '@/server/lib/logger';
 import { callLLM } from '@/server/lib/llm';
-import { MODELS } from '@/server/lib/models';
+import { MODELS, MODEL_FALLBACKS } from '@/server/lib/models';
 import { getFirecrawl, acquireRateLimit } from './firecrawl-client';
 import type { NormalizedListing, SearchCriteria } from './types';
 
@@ -151,6 +151,7 @@ async function scrapeSearchPage(
   try {
     const resp = await callLLM({
       model: MODELS.listingSync,
+      fallbackModels: MODEL_FALLBACKS.listingSync,
       system: SEARCH_PAGE_EXTRACT_PROMPT,
       prompt: markdown.slice(0, 12_000),
       jsonMode: true,
@@ -232,6 +233,7 @@ async function scrapeIndividualPages(
 
         const resp = await callLLM({
           model: MODELS.listingSync,
+          fallbackModels: MODEL_FALLBACKS.listingSync,
           system: INDIVIDUAL_PAGE_EXTRACT_PROMPT,
           prompt: markdown.slice(0, 4000),
           jsonMode: true,

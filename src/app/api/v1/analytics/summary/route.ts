@@ -82,19 +82,21 @@ export async function GET(req: NextRequest) {
         };
       });
 
-      // ── Top neighborhoods from client profiles ────────────────────────────
+      // ── Top neighborhoods from briefing extracted criteria ────────────────
+      // Reads location.neighborhoods[] from each briefing's LLM-extracted criteria.
 
-      const clientsWithProfile = await tx.client.findMany({
-        where: { userId, isGuest: false, archiveStatus: 'active' },
-        select: { profile: true },
+      const briefingsWithCriteria = await tx.briefing.findMany({
+        where: { userId },
+        select: { extractedCriteria: true },
+        orderBy: { createdAt: 'desc' },
         take: 500,
       });
 
       const neighborhoodCount: Record<string, number> = {};
-      for (const c of clientsWithProfile) {
-        const profile = c.profile as { neighborhoods?: string[] } | null;
-        for (const n of profile?.neighborhoods ?? []) {
-          neighborhoodCount[n] = (neighborhoodCount[n] ?? 0) + 1;
+      for (const b of briefingsWithCriteria) {
+        const criteria = b.extractedCriteria as { location?: { neighborhoods?: string[] } } | null;
+        for (const n of criteria?.location?.neighborhoods ?? []) {
+          if (n) neighborhoodCount[n] = (neighborhoodCount[n] ?? 0) + 1;
         }
       }
 

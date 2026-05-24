@@ -83,12 +83,25 @@ export interface LLMRequestOptions {
   responseSchema?: object;
   /** When true, instructs the model to respond with valid JSON only (json_object mode). */
   jsonMode?: boolean;
+  /**
+   * Maximum price per million tokens. Requests only route to providers within budget.
+   * Prevents silent cost spikes when a cheap model is temporarily served by a pricier provider.
+   */
+  maxPrice?: { prompt: number; completion: number };
+  /**
+   * Fallback model chain (OpenRouter native). When the primary model or its provider fails,
+   * OpenRouter tries each model in order without incurring the latency of a failed attempt.
+   * Use for provider-level resilience, not quality fallback (quality fallback stays in app code).
+   */
+  fallbackModels?: string[];
 }
 
 export interface LLMResponse {
   content: Array<{ type: 'text'; text: string }>;
   inputTokens: number;
   outputTokens: number;
+  /** Tokens served from cache (Gemini implicit / Anthropic explicit). 0 when not cached. */
+  cachedInputTokens: number;
   durationMs: number;
   /** The model ID that was actually used (for logging). */
   model: string;
@@ -134,6 +147,8 @@ export async function callLLM(opts: LLMRequestOptions): Promise<LLMResponse> {
     maxAttempts = 3,
     responseSchema,
     jsonMode = false,
+    maxPrice,
+    fallbackModels,
   } = opts;
 
   const resolvedMaxTokens = maxTokens ?? max_tokens ?? 1024;
@@ -171,12 +186,19 @@ export async function callLLM(opts: LLMRequestOptions): Promise<LLMResponse> {
         const timer = setTimeout(() => controller.abort(), timeoutMs);
 
         try {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const modelParam: any = fallbackModels?.length
+            ? { models: [model, ...fallbackModels], route: 'fallback' }
+            : { model };
+
           return await getClient().chat.completions.create(
             {
-              model,
+              ...modelParam,
               max_tokens: resolvedMaxTokens,
               messages: allMessages,
               ...(responseFormat ? { response_format: responseFormat } : {}),
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              ...(maxPrice ? { provider: { max_price: maxPrice } } as any : {}),
             },
             { signal: controller.signal },
           );
@@ -191,10 +213,13 @@ export async function callLLM(opts: LLMRequestOptions): Promise<LLMResponse> {
     recordSuccess();
 
     const text = response.choices[0]?.message?.content ?? '';
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const usage = response.usage as any;
     return {
       content: [{ type: 'text', text }],
-      inputTokens: response.usage?.prompt_tokens ?? 0,
-      outputTokens: response.usage?.completion_tokens ?? 0,
+      inputTokens: usage?.prompt_tokens ?? 0,
+      outputTokens: usage?.completion_tokens ?? 0,
+      cachedInputTokens: usage?.prompt_tokens_details?.cached_tokens ?? 0,
       durationMs: Date.now() - start,
       model,
     };

@@ -9,6 +9,12 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { PartnerSiteForm } from './PartnerSiteForm';
 import { apiFetch } from '@/lib/api-fetch';
+import { cn } from '@/lib/utils';
+import {
+  selectionAnalysis,
+  toggleSelectionIds,
+  toggleSelectAllIds,
+} from '@/lib/partner-site-selection';
 
 function SiteFavicon({ domain }: { domain: string }) {
   const [failed, setFailed] = useState(false);
@@ -57,6 +63,8 @@ interface Props {
   selectable?: boolean;
   selectedIds?: string[];
   onSelectionChange?: (ids: string[]) => void;
+  /** Maximum number of sites that can be selected simultaneously. */
+  maxSelectable?: number;
 }
 
 // ─── sort helpers (module-level for stable identity) ─────────────────────────
@@ -92,7 +100,7 @@ function writeHidden(ids: string[]): void {
 
 // ─── component ────────────────────────────────────────────────────────────────
 
-export function PartnerSiteList({ selectable, selectedIds = [], onSelectionChange }: Props) {
+export function PartnerSiteList({ selectable, selectedIds = [], onSelectionChange, maxSelectable }: Props) {
   const [sites, setSites] = useState<PartnerSite[]>([]);
   const [loading, setLoading] = useState(true);
   const [discoveringId, setDiscoveringId] = useState<string | null>(null);
@@ -140,6 +148,10 @@ export function PartnerSiteList({ selectable, selectedIds = [], onSelectionChang
     sortOrder,
   );
   const hiddenCount = sites.filter((s) => hiddenIds.includes(s.id)).length;
+
+  // Selection analysis for summary (selectable mode only)
+  const { indexedCount: indexedSelectedCount, liveCount: liveSelectedCount, noProfileCount: noProfileSelectedCount, estimatedTime } =
+    selectionAnalysis(sites, selectable ? selectedIds : []);
 
   // ── handlers ───────────────────────────────────────────────────────────────
 
@@ -244,9 +256,12 @@ export function PartnerSiteList({ selectable, selectedIds = [], onSelectionChang
 
   function toggleSelection(id: string) {
     if (!onSelectionChange) return;
-    onSelectionChange(
-      selectedIds.includes(id) ? selectedIds.filter((sid) => sid !== id) : [...selectedIds, id],
-    );
+    onSelectionChange(toggleSelectionIds(id, sites, selectedIds, maxSelectable));
+  }
+
+  function toggleSelectAll() {
+    if (!onSelectionChange) return;
+    onSelectionChange(toggleSelectAllIds(visibleSites.map((s) => s.id), selectedIds, maxSelectable));
   }
 
   function handleSiteAdded(site: PartnerSite) {
@@ -296,10 +311,22 @@ export function PartnerSiteList({ selectable, selectedIds = [], onSelectionChang
             <ArrowDownAZ className="w-3 h-3" />
             A–Z
           </button>
-          {selectable && selectedIds.length > 0 && (
-            <span className="ml-auto text-xs text-primary font-medium">
-              {selectedIds.length} selecionado{selectedIds.length !== 1 ? 's' : ''}
-            </span>
+          {selectable && (
+            <div className="ml-auto flex items-center gap-2">
+              {selectedIds.length > 0 && (
+                <span className="text-xs text-primary font-medium">
+                  {selectedIds.length} selecionado{selectedIds.length !== 1 ? 's' : ''}
+                </span>
+              )}
+              <button
+                onClick={toggleSelectAll}
+                className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs border border-border bg-muted/30 text-muted-foreground hover:border-primary/40 hover:text-primary hover:bg-primary/5 transition-colors"
+              >
+                {visibleSites.length > 0 && visibleSites.every((s) => selectedIds.includes(s.id))
+                  ? 'Desmarcar todas'
+                  : 'Selecionar todas'}
+              </button>
+            </div>
           )}
         </div>
       )}
@@ -497,6 +524,29 @@ export function PartnerSiteList({ selectable, selectedIds = [], onSelectionChang
                   </Badge>
                 )}
 
+                {/* Speed indicator — only in selectable mode */}
+                {selectable && !isCircuitOpen && (
+                  <span
+                    className={cn(
+                      'ml-auto text-[10px] font-medium px-1.5 py-0.5 rounded',
+                      site.listingCount > 0
+                        ? 'bg-success/10 text-success'
+                        : hasProfile
+                          ? 'bg-warning/10 text-warning'
+                          : 'bg-muted text-muted-foreground',
+                    )}
+                    title={
+                      site.listingCount > 0
+                        ? 'Estoque indexado — busca rápida'
+                        : hasProfile
+                          ? 'Busca ao vivo via scraping — mais lento'
+                          : 'Sem sync — site será ignorado na busca'
+                    }
+                  >
+                    {site.listingCount > 0 ? '⚡ Indexado' : hasProfile ? '⏱ Ao vivo' : '— Sem sync'}
+                  </span>
+                )}
+
               </div>
             </div>
           );
@@ -538,6 +588,41 @@ export function PartnerSiteList({ selectable, selectedIds = [], onSelectionChang
             ? 'Ocultar sites escondidos'
             : `${hiddenCount} site${hiddenCount !== 1 ? 's' : ''} oculto${hiddenCount !== 1 ? 's' : ''}`}
         </button>
+      )}
+
+      {/* Selection summary (selectable mode only) */}
+      {selectable && selectedIds.length > 0 && (
+        <div className="rounded-lg border border-border bg-muted/20 px-3 py-2 space-y-1">
+          <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
+            {indexedSelectedCount > 0 && (
+              <span className="text-success font-medium">⚡ {indexedSelectedCount} indexado{indexedSelectedCount !== 1 ? 's' : ''}</span>
+            )}
+            {liveSelectedCount > 0 && (
+              <span className="text-warning font-medium">⏱ {liveSelectedCount} ao vivo</span>
+            )}
+            {noProfileSelectedCount > 0 && (
+              <span className="text-destructive font-medium">⚠ {noProfileSelectedCount} sem sync</span>
+            )}
+            <span className="ml-auto">Estimado: {estimatedTime}</span>
+          </div>
+          {noProfileSelectedCount > 0 && (
+            <p className="text-[10px] text-muted-foreground">Sites sem sync serão ignorados na busca.</p>
+          )}
+        </div>
+      )}
+
+      {/* Warnings */}
+      {selectable && maxSelectable !== undefined && selectedIds.length >= maxSelectable && (
+        <p className="text-xs text-warning font-medium flex items-center gap-1">
+          <AlertTriangle className="w-3 h-3" />
+          Limite de {maxSelectable} sites atingido. Desmarque um para trocar.
+        </p>
+      )}
+      {selectable && liveSelectedCount > 0 && selectedIds.length < (maxSelectable ?? Infinity) && (
+        <p className="text-xs text-muted-foreground flex items-center gap-1">
+          <AlertTriangle className="w-3 h-3 text-warning" />
+          Já há 1 site ao vivo selecionado. Os próximos precisam ter estoque indexado.
+        </p>
       )}
 
       <PartnerSiteForm onCreated={handleSiteAdded} />

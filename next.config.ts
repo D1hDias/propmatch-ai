@@ -2,6 +2,7 @@ import type { NextConfig } from 'next';
 import { withSentryConfig } from '@sentry/nextjs';
 
 const nextConfig: NextConfig = {
+  allowedDevOrigins: ['*.trycloudflare.com'],
   turbopack: {
     rules: {
       '*.ttf': { loaders: ['null-loader'], as: '*.js' },

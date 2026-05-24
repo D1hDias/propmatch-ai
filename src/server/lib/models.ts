@@ -47,6 +47,27 @@ export const MODELS = {
    */
   listingSync: 'openai/gpt-4.1-nano',
 
+  /**
+   * WhatsApp message generation for client and partner messages.
+   * Receives property data + client criteria and produces a persuasive
+   * PT-BR message ready to send via WhatsApp. Called once per "Gerar
+   * mensagem" click — low volume, quality over cost.
+   */
+  whatsAppMessage: 'google/gemini-2.5-flash-lite:nitro',
+
 } as const;
 
 export type ModelKey = keyof typeof MODELS;
+
+// ---------------------------------------------------------------------------
+// Provider-level fallback chains (OpenRouter native fallback).
+// Used alongside MODELS entries for calls that have no app-level fallback.
+// OpenRouter tries each model in order on provider failure — no latency cost
+// unless the primary provider actually goes down.
+// ---------------------------------------------------------------------------
+
+export const MODEL_FALLBACKS: Partial<Record<ModelKey, string[]>> = {
+  listingMatcher: ['openai/gpt-4.1-mini'],
+  listingSync: ['openai/gpt-4.1-mini'],
+  amenityExtraction: ['google/gemini-2.5-flash-lite'],
+};

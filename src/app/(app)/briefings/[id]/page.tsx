@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { use } from 'react';
 import { notFound } from 'next/navigation';
 import Link from 'next/link';
-import { ArrowLeft, Plus } from 'lucide-react';
+import { ArrowLeft, Pencil, Search } from 'lucide-react';
 import { ExtractionResult } from '@/components/briefings/ExtractionResult';
 import { SearchTrigger } from '@/components/search/SearchTrigger';
 import { SearchResults } from '@/components/search/SearchResults';
@@ -27,6 +27,24 @@ interface BriefingDetail {
 
 interface Props {
   params: Promise<{ id: string }>;
+}
+
+function buildEditUrl(briefing: BriefingDetail): string {
+  const c = briefing.extractedCriteria;
+  const p = new URLSearchParams();
+  // intent: "buy" → purpose: "sale", "rent" → "rent"
+  if (c?.intent) p.set('purpose', c.intent === 'rent' ? 'rent' : 'sale');
+  if (c?.hard_filters?.property_type) p.set('propertyType', c.hard_filters.property_type);
+  const hoods = c?.location?.neighborhoods ?? [];
+  if (hoods.length) p.set('neighborhoods', hoods.join(','));
+  if (c?.hard_filters?.price_min != null) p.set('priceMin', String(c.hard_filters.price_min));
+  if (c?.hard_filters?.price_max != null) p.set('priceMax', String(c.hard_filters.price_max));
+  if (c?.hard_filters?.bedrooms_min != null) p.set('bedroomsMin', String(c.hard_filters.bedrooms_min));
+  if (c?.hard_filters?.parking_min != null) p.set('parkingMin', String(c.hard_filters.parking_min));
+  if (c?.hard_filters?.area_min_m2 != null) p.set('areaMin', String(c.hard_filters.area_min_m2));
+  if (c?.hard_filters?.area_max_m2 != null) p.set('areaMax', String(c.hard_filters.area_max_m2));
+  if (briefing.client?.id && !briefing.client.isGuest) p.set('clientId', briefing.client.id);
+  return `/briefings/new?${p.toString()}`;
 }
 
 export default function BriefingDetailPage({ params }: Props) {
@@ -87,12 +105,22 @@ export default function BriefingDetailPage({ params }: Props) {
           <ArrowLeft className="w-4 h-4" />
           Histórico
         </Link>
-        <Button asChild size="sm" variant="outline" className="gap-1.5">
-          <Link href="/briefings/new">
-            <Plus className="w-4 h-4" />
-            Novo briefing
-          </Link>
-        </Button>
+        <div className="flex items-center gap-2">
+          {isReady && briefing.extractedCriteria && (
+            <Button asChild size="sm" variant="outline" className="gap-1.5">
+              <Link href={buildEditUrl(briefing)}>
+                <Pencil className="w-4 h-4" />
+                Editar busca
+              </Link>
+            </Button>
+          )}
+          <Button asChild size="sm" variant="default" className="gap-1.5">
+            <Link href="/briefings/new">
+              <Search className="w-4 h-4" />
+              Nova Busca
+            </Link>
+          </Button>
+        </div>
       </div>
 
       {/* Guest archive warning */}
@@ -123,7 +151,7 @@ export default function BriefingDetailPage({ params }: Props) {
               <SearchTrigger briefingId={id} />
             )}
           </div>
-          {(isSearching || isReady || isFailed) && <SearchResults briefingId={id} />}
+          {(isSearching || isReady || isFailed) && <SearchResults briefingId={id} clientName={client?.name} />}
         </section>
       )}
     </div>

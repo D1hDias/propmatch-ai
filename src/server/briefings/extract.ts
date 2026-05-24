@@ -294,7 +294,6 @@ Responda SOMENTE com o JSON. Sem texto antes ou depois. Sem markdown.`;
 async function attemptExtraction(
   rawText: string,
   model: string,
-  useSchema: boolean,
 ): Promise<{ criteria: ExtractedCriteria; confidence: number; missingCriticalFields: string[]; rawOutput: string; durationMs: number; model: string }> {
   const response = await callLLM({
     model,
@@ -303,10 +302,7 @@ async function attemptExtraction(
     maxTokens: 1024,
     timeoutMs: 25_000,
     maxAttempts: 2,
-    // Use json_schema for fallback model (GPT-4.1 Mini), json_object for Gemini
-    ...(useSchema
-      ? { responseSchema: EXTRACTION_JSON_SCHEMA }
-      : { jsonMode: true }),
+    responseSchema: EXTRACTION_JSON_SCHEMA,
   });
 
   const content = response.content[0]?.text ?? '';
@@ -358,7 +354,7 @@ export interface ExtractionResult {
 
 export async function extractBriefing(rawText: string): Promise<ExtractionResult> {
   // Attempt 1 — primary model (Gemini 2.5 Flash Lite)
-  const attempt1 = await attemptExtraction(rawText, MODELS.briefingExtraction, false);
+  const attempt1 = await attemptExtraction(rawText, MODELS.briefingExtraction);
 
   const needsFallback =
     attempt1.missingCriticalFields.length > 0 || attempt1.confidence < 0.65;
@@ -386,7 +382,7 @@ export async function extractBriefing(rawText: string): Promise<ExtractionResult
   // Attempt 2 — fallback model (GPT-4.1 Mini) with json_schema structured output
   let attempt2: typeof attempt1;
   try {
-    attempt2 = await attemptExtraction(rawText, MODELS.briefingExtractionFallback, true);
+    attempt2 = await attemptExtraction(rawText, MODELS.briefingExtractionFallback);
 
     logger.info('briefing_extraction_fallback', {
       model: attempt2.model,

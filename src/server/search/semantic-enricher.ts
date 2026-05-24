@@ -1,6 +1,6 @@
 import 'server-only';
 import { callLLM } from '@/server/lib/llm';
-import { MODELS } from '@/server/lib/models';
+import { MODELS, MODEL_FALLBACKS } from '@/server/lib/models';
 import { logger } from '@/server/lib/logger';
 import { trackLLMUsage } from '@/server/lib/usage-tracker';
 
@@ -122,10 +122,13 @@ export async function enrichSemanticFields(
   try {
     const response = await callLLM({
       model: MODELS.amenityExtraction,
+      fallbackModels: MODEL_FALLBACKS.amenityExtraction,
       system: SYSTEM_PROMPT,
       prompt: buildPrompt(description, fields),
       maxTokens: 128,
       jsonMode: true,
+      // gpt-4.1-nano is ~$0.10/$0.40 per 1M tokens — reject if provider charges more
+      maxPrice: { prompt: 0.15, completion: 0.60 },
     });
 
     trackLLMUsage({
@@ -133,6 +136,7 @@ export async function enrichSemanticFields(
       operation: 'semantic_enrichment',
       inputTokens: response.inputTokens,
       outputTokens: response.outputTokens,
+      cachedInputTokens: response.cachedInputTokens,
       durationMs: Date.now() - start,
     });
 

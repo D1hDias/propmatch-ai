@@ -5,7 +5,7 @@ import { requireAuth } from '@/server/auth/context';
 import { withRlsContext, prisma } from '@/server/db/client';
 import { AppError } from '@/server/lib/errors';
 import { apiSuccess, apiError } from '@/server/lib/response';
-import { formatWhatsAppMessage, formatPartnerMessage } from '@/server/messaging/format';
+import { generateClientMessage, generatePartnerMessage } from '@/server/messaging/generate';
 import { createShortLink } from '@/server/messaging/shortener';
 import { requirePlan } from '@/server/auth/gates';
 import { logger } from '@/server/lib/logger';
@@ -136,44 +136,44 @@ export async function POST(
 
     let formattedText: string;
 
+    // Build client criteria summary (used for context in both message types)
+    const criteria = briefing.extractedCriteria as { location?: { city?: string; neighborhoods?: string[] }; hard_filters?: { bedrooms_min?: number; price_max?: number }; intent?: string } | null;
+    const profileParts: string[] = [];
+    if (criteria?.hard_filters?.bedrooms_min) profileParts.push(`${criteria.hard_filters.bedrooms_min}+ quartos`);
+    if (criteria?.hard_filters?.price_max) profileParts.push(`até R$ ${Number(criteria.hard_filters.price_max).toLocaleString('pt-BR')}`);
+    if (criteria?.location?.neighborhoods?.[0]) profileParts.push(criteria.location.neighborhoods[0]);
+    if (criteria?.location?.city) profileParts.push(criteria.location.city);
+    if (criteria?.intent === 'buy') profileParts.push('compra');
+    if (criteria?.intent === 'rent') profileParts.push('locação');
+    const clientCriteriaSummary = profileParts.join(', ') || undefined;
+    const clientProfile = clientCriteriaSummary ?? `interessado em imóvel para ${briefing.client.name}`;
+
     if (target === 'partner') {
-      // For partner messages, generate one message per selected property
-      // (broker will send individually to each partner). Use first property.
-      const firstProp = propertiesForMessage[0];
-      if (!firstProp) throw new AppError('VALIDATION_FAILED', 'No property', 'Nenhum imóvel.', 400);
+      if (!propertiesForMessage[0]) throw new AppError('VALIDATION_FAILED', 'No property', 'Nenhum imóvel.', 400);
 
-      // Build a concise client profile summary from extracted criteria (new nested schema)
-      const criteria = briefing.extractedCriteria as { location?: { city?: string; neighborhoods?: string[] }; hard_filters?: { bedrooms_min?: number; price_max?: number }; intent?: string } | null;
-      const profileParts: string[] = [];
-      if (criteria?.hard_filters?.bedrooms_min) profileParts.push(`${criteria.hard_filters.bedrooms_min}+ quartos`);
-      if (criteria?.hard_filters?.price_max) profileParts.push(`até R$ ${Number(criteria.hard_filters.price_max).toLocaleString('pt-BR')}`);
-      if (criteria?.location?.neighborhoods?.[0]) profileParts.push(criteria.location.neighborhoods[0]);
-      if (criteria?.location?.city) profileParts.push(`${criteria.location.city}`);
-      if (criteria?.intent === 'buy') profileParts.push('compra');
-      if (criteria?.intent === 'rent') profileParts.push('locação');
-      const clientProfile = profileParts.length > 0
-        ? profileParts.join(', ')
-        : `interessado em ${briefing.client.name}`;
-
-      // Generate one message per property (concatenated with separator for multiple)
-      formattedText = propertiesForMessage.map((p) =>
-        formatPartnerMessage({
-          brokerName: briefing.user.name,
-          property: {
-            ...p,
-            price: Number(p.price),
-            url: shortLinkMap.get(p.url) ?? p.url,
-            personalNote: p.personalNote ?? undefined,
-          },
-          clientProfile,
-        })
-      ).join('\n\n---\n\n');
+      // One LLM-generated message per property; broker sends each separately
+      const partnerMessages = await Promise.all(
+        propertiesForMessage.map((p) =>
+          generatePartnerMessage({
+            brokerName: briefing.user.name,
+            property: {
+              ...p,
+              price: Number(p.price),
+              personalNote: p.personalNote ?? undefined,
+            },
+            clientProfile,
+            shortLink: shortLinkMap.get(p.url) ?? p.url,
+          }),
+        ),
+      );
+      formattedText = partnerMessages.join('\n\n---\n\n');
     } else {
-      formattedText = formatWhatsAppMessage({
+      formattedText = await generateClientMessage({
         clientName: briefing.client.name,
         brokerName: briefing.user.name,
         properties: propertiesForMessage,
-        shortener: (url) => shortLinkMap.get(url) ?? url,
+        clientCriteriaSummary,
+        shortLinks: shortLinkMap,
       });
     }
 

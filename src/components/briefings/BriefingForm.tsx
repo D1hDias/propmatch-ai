@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useCallback } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { ClientSelector } from '@/components/clients/ClientSelector';
 import { PartnerSiteList } from '@/components/partners/PartnerSiteList';
@@ -45,6 +45,7 @@ function SourceSelector({ selectedPartnerIds, onSelectionChange, disabled }: Sou
       </p>
       <PartnerSiteList
         selectable
+        maxSelectable={5}
         selectedIds={selectedPartnerIds}
         onSelectionChange={onSelectionChange}
       />
@@ -187,23 +188,51 @@ function AreaField({ label, value, onChange, placeholder, disabled }: AreaFieldP
 
 export function BriefingForm() {
   const router = useRouter();
+  const searchParams = useSearchParams();
 
   // Global
-  const [clientId, setClientId] = useState<string | null>(null);
+  const [clientId, setClientId] = useState<string | null>(() => searchParams.get('clientId'));
   const [selectedPartnerIds, setSelectedPartnerIds] = useState<string[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
 
-  // Structured criteria
-  const [purpose, setPurpose] = useState<'sale' | 'rent'>('sale');
-  const [propertyTypes, setPropertyTypes] = useState<string[]>([]);
-  const [neighborhoods, setNeighborhoods] = useState<string[]>([]);
-  const [priceMin, setPriceMin] = useState<number | null>(null);
-  const [priceMax, setPriceMax] = useState<number | null>(null);
-  const [bedroomsMin, setBedroomsMin] = useState<number | null>(null);
-  const [parkingMin, setParkingMin] = useState<number | null>(null);
-  const [areaMin, setAreaMin] = useState<number | null>(null);
-  const [areaMax, setAreaMax] = useState<number | null>(null);
+  // Structured criteria — initialized from query params on first render (no flash)
+  const [purpose, setPurpose] = useState<'sale' | 'rent'>(() => {
+    const p = searchParams.get('purpose');
+    return p === 'rent' ? 'rent' : 'sale';
+  });
+  const [propertyTypes, setPropertyTypes] = useState<string[]>(() => {
+    const pt = searchParams.get('propertyType');
+    return pt ? [pt] : [];
+  });
+  const [neighborhoods, setNeighborhoods] = useState<string[]>(() => {
+    const hoods = searchParams.get('neighborhoods');
+    return hoods ? hoods.split(',').filter(Boolean) : [];
+  });
+  const [priceMin, setPriceMin] = useState<number | null>(() => {
+    const v = searchParams.get('priceMin');
+    return v ? Number(v) : null;
+  });
+  const [priceMax, setPriceMax] = useState<number | null>(() => {
+    const v = searchParams.get('priceMax');
+    return v ? Number(v) : null;
+  });
+  const [bedroomsMin, setBedroomsMin] = useState<number | null>(() => {
+    const v = searchParams.get('bedroomsMin');
+    return v ? Number(v) : null;
+  });
+  const [parkingMin, setParkingMin] = useState<number | null>(() => {
+    const v = searchParams.get('parkingMin');
+    return v ? Number(v) : null;
+  });
+  const [areaMin, setAreaMin] = useState<number | null>(() => {
+    const v = searchParams.get('areaMin');
+    return v ? Number(v) : null;
+  });
+  const [areaMax, setAreaMax] = useState<number | null>(() => {
+    const v = searchParams.get('areaMax');
+    return v ? Number(v) : null;
+  });
 
   // Optional client message (additional context)
   const [showContext, setShowContext] = useState(false);

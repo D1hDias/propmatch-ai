@@ -40,7 +40,7 @@ export function WhatsAppMessageModal({
     setLoading(true);
     setError(null);
     try {
-            const res = await apiFetch(`/api/v1/briefings/${briefingId}/messages`, {
+      const res = await apiFetch(`/api/v1/briefings/${briefingId}/messages`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -55,10 +55,10 @@ export function WhatsAppMessageModal({
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        throw new Error((body as { error?: { userMessage?: string } })?.error?.userMessage ?? 'Erro ao gerar mensagem.');
+        throw new Error((body as { error?: { user_message?: string } })?.error?.user_message ?? 'Erro ao gerar mensagem.');
       }
-      const data = await res.json() as { data: { formattedText: string } };
-      setFormattedText(data.data.formattedText);
+      const data = await res.json() as { formattedText: string };
+      setFormattedText(data.formattedText);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Erro desconhecido.');
     } finally {

@@ -14,23 +14,23 @@ test.describe('Tier gating', () => {
         name: 'QA Free User',
         email,
         password: 'QaTest123!',
-        lgpdConsent: true,
+        lgpd_consent: true,
       },
     });
     expect(signupRes.status()).toBe(201);
-    const { data: signupData } = await signupRes.json() as { data: { accessToken: string } };
-    const token = signupData.accessToken;
+    const { access_token: token } = await signupRes.json() as { access_token: string };
 
     // Create a briefing (requires a client first — guest is auto-created)
     const briefingRes = await request.post('/api/v1/briefings', {
       headers: { Authorization: `Bearer ${token}` },
       data: {
-        rawText: 'Apartamento 2 quartos em Pinheiros até R$ 800k',
+        raw_text: 'Apartamento 2 quartos em Pinheiros até R$ 800k',
+        custom_urls: ['https://www.vivareal.com.br/busca/'],
       },
     });
     // 201 or 202 depending on async extraction — just verify it was created
     expect([201, 202]).toContain(briefingRes.status());
-    const { data: briefing } = await briefingRes.json() as { data: { id: string } };
+    const briefing = await briefingRes.json() as { id: string };
 
     // Attempt to generate a WhatsApp message — should be gated for free users
     const msgRes = await request.post(`/api/v1/briefings/${briefing.id}/messages`, {

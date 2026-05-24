@@ -30,6 +30,7 @@ export interface LLMUsageEvent {
   briefingId?: string;
   inputTokens: number;
   outputTokens: number;
+  cachedInputTokens: number;
   durationMs: number;
   fallbackUsed?: boolean;
 }

@@ -1,6 +1,6 @@
 import 'server-only';
 import { callLLM } from '@/server/lib/llm';
-import { MODELS } from '@/server/lib/models';
+import { MODELS, MODEL_FALLBACKS } from '@/server/lib/models';
 import { logger } from '@/server/lib/logger';
 import type { NormalizedListing, SearchCriteria } from './types';
 
@@ -136,6 +136,7 @@ Avalie a compatibilidade de cada imóvel com o briefing acima.`;
   try {
     const response = await callLLM({
       model: MODELS.listingMatcher,
+      fallbackModels: MODEL_FALLBACKS.listingMatcher,
       system: systemPrompt,
       prompt: userPrompt,
       jsonMode: true,

@@ -64,11 +64,11 @@ function location(p: PropertyForMessage): string {
  * Short-link substitution is stubbed until MSG-3 is implemented.
  */
 export function formatWhatsAppMessage(input: FormatMessageInput): string {
-  const { clientName, brokerName, properties, shortener } = input;
+  const { brokerName, properties, shortener } = input;
   const shorten = shortener ?? ((url: string) => url);
 
   const lines: string[] = [
-    `Olá, ${clientName}! 👋`,
+    `Olá, [NOME]! 👋`,
     `Separei alguns imóveis que combinam com o que você me passou:`,
     '',
   ];

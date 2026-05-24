@@ -1,33 +1,25 @@
 import type { NextRequest } from 'next/server';
-import { prisma } from '@/server/db/client';
 
 const CACHE_MAX_AGE = 60 * 60 * 24 * 7; // 7 dias
 
-// Domínios de parceiros em cache — recarrega do banco a cada 5 minutos.
-let allowedHostsCache: Set<string> = new Set();
-let cacheExpiresAt = 0;
-
-async function isAllowed(url: string): Promise<boolean> {
+// Bloqueia apenas IPs privados e localhost para prevenir SSRF.
+// Não restringimos por domínio porque as fotos vêm de CDNs de sistemas de gestão
+// imobiliária (ex: cdn.vistahost.com.br) que não coincidem com o domínio do parceiro.
+function isAllowed(url: string): boolean {
   try {
-    const { hostname } = new URL(url);
+    const parsed = new URL(url);
+
+    // Exige HTTPS
+    if (parsed.protocol !== 'https:') return false;
+
+    const hostname = parsed.hostname;
 
     // Rejeita IPs privados / localhost para prevenir SSRF
     if (/^(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(hostname)) {
       return false;
     }
 
-    const now = Date.now();
-    if (now > cacheExpiresAt) {
-      const sites = await prisma.partnerSite.findMany({ select: { domain: true } });
-      allowedHostsCache = new Set(sites.map((s) => s.domain.toLowerCase()));
-      cacheExpiresAt = now + 5 * 60 * 1000; // 5 minutos
-    }
-
-    // Aceita se o hostname bater exatamente com um domínio parceiro
-    // ou for subdomínio dele (ex: imgs.kariocaimoveis.com.br)
-    return [...allowedHostsCache].some(
-      (domain) => hostname === domain || hostname.endsWith(`.${domain}`),
-    );
+    return true;
   } catch {
     return false;
   }

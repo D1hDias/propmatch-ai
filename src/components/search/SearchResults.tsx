@@ -20,6 +20,7 @@ const LOADING_MESSAGES = [
 
 interface SearchResultsProps {
   briefingId: string;
+  clientName?: string;
 }
 
 type SearchState = 'connecting' | 'searching' | 'done' | 'error';
@@ -30,7 +31,7 @@ interface CustomUrlResult {
   error?: string;
 }
 
-export function SearchResults({ briefingId }: SearchResultsProps) {
+export function SearchResults({ briefingId, clientName }: SearchResultsProps) {
   const [state, setState] = useState<SearchState>('connecting');
   const [listings, setListings] = useState<PropertyCardData[]>([]);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -387,6 +388,7 @@ export function SearchResults({ briefingId }: SearchResultsProps) {
           briefingId={briefingId}
           selectedIds={[...selected]}
           listings={listings}
+          clientName={clientName}
           onClose={() => setShowModal(false)}
         />
       )}

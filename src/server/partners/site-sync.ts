@@ -3,7 +3,7 @@ import FirecrawlApp from '@mendable/firecrawl-js';
 import { prisma } from '@/server/db/client';
 import { logger } from '@/server/lib/logger';
 import { callLLM } from '@/server/lib/llm';
-import { MODELS } from '@/server/lib/models';
+import { MODELS, MODEL_FALLBACKS } from '@/server/lib/models';
 import type { PartnerSite } from '@prisma/client';
 import type { NormalizedListing, SearchCriteria } from '@/server/search/types';
 
@@ -37,7 +37,7 @@ const EXTRACTION_SYSTEM_PROMPT =
   'title (string), price (número BRL sem R$ ou pontos), bedrooms (número), bathrooms (número), ' +
   'area_sqm (número), parking (número), neighborhood (string), city (string), ' +
   'property_type (string), description (string max 200 chars), address (string), ' +
-  'image_url (string — URL da foto principal do imóvel; procure em og:image, a primeira imagem grande da galeria, ou qualquer <img> com foto do imóvel). ' +
+  'image_urls (array de strings — URLs de TODAS as fotos do imóvel encontradas na página, incluindo og:image, galeria, slides e qualquer <img> com foto do imóvel; mínimo 1, máximo 20). ' +
   'Omita campos não encontrados. Responda APENAS com o JSON, sem texto adicional.';
 
 // JSON schema sent to Firecrawl for structured extraction from a search-results page.
@@ -61,7 +61,7 @@ const SEED_PAGE_SCHEMA = {
           city:          { type: 'string', description: 'City name' },
           property_type: { type: 'string', description: 'Type: apartment, house, studio, penthouse, commercial, land' },
           listing_url:   { type: 'string', description: 'Full direct URL to this specific listing page' },
-          image_url:     { type: 'string', description: 'URL of the main listing photo' },
+          image_urls:    { type: 'array', items: { type: 'string' }, description: 'URLs of all listing photos (at least the main one)' },
         },
         required: ['title', 'price', 'listing_url'],
       },
@@ -78,7 +78,7 @@ const BULK_EXTRACTION_SYSTEM_PROMPT =
   'Campos por imóvel: url (string — URL completa), title (string), price (número BRL sem R$ ou pontos), ' +
   'bedrooms (número), bathrooms (número), area_sqm (número), parking (número), ' +
   'neighborhood (string), city (string), property_type (string), ' +
-  'image_url (string — URL da foto do card). ' +
+  'image_urls (array de strings — URLs de todas as fotos visíveis no card ou galeria do imóvel; mínimo 1). ' +
   'Omita campos não encontrados. Responda APENAS com o JSON object {"listings":[...]}.';
 
 // Max listing URLs per batchScrape call (Firecrawl recommendation: ≤25)
@@ -186,7 +186,8 @@ async function discoverFromSeedUrls(
         const result = await firecrawl.scrape(pageUrl, {
           formats: ['markdown', 'links'],
           onlyMainContent: false,
-          timeout: 60000,
+          timeout: site.needsJavascript ? 90000 : 60000,
+          ...(site.needsJavascript ? { waitFor: 3000 } : {}),
         });
 
         const res = result as Record<string, unknown>;
@@ -266,6 +267,22 @@ function buildPaginatedUrl(url: string, page: number): string {
   if (page === 1) return url;
   try {
     const u = new URL(url);
+    // If URL already has a page param, increment it
+    for (const param of ['page', 'pagina', 'pg', 'pag', 'p']) {
+      if (u.searchParams.has(param)) {
+        u.searchParams.set(param, String(page));
+        return u.toString();
+      }
+    }
+    // Check for /page/N/ or /pagina/N/ path pattern
+    const pathPatterns = ['/page/', '/pagina/', '/pg/'];
+    for (const pat of pathPatterns) {
+      if (u.pathname.includes(pat)) {
+        u.pathname = u.pathname.replace(new RegExp(`${pat}\\d+`), `${pat}${page}`);
+        return u.toString();
+      }
+    }
+    // Default: append ?page=N
     u.searchParams.set('page', String(page));
     return u.toString();
   } catch {
@@ -351,6 +368,20 @@ export async function syncSite(site: PartnerSite, onProgress?: (e: SyncProgressE
     await prisma.partnerSite.update({ where: { id: site.id }, data: { syncStatus: 'running' } });
     try {
       return await syncSiteViaKarocaBuscar(site, onProgress);
+    } catch (err) {
+      prisma.partnerSite.update({
+        where: { id: site.id },
+        data: { syncStatus: 'error', lastErrorAt: new Date(), consecutiveFailures: { increment: 1 } },
+      }).catch(() => {});
+      throw err;
+    }
+  }
+
+  // vistahost_api — Vista Software / VistaHost CMS JSON API
+  if (strategy === 'vistahost_api') {
+    await prisma.partnerSite.update({ where: { id: site.id }, data: { syncStatus: 'running' } });
+    try {
+      return await syncSiteViaVistaHostApi(site, onProgress);
     } catch (err) {
       prisma.partnerSite.update({
         where: { id: site.id },
@@ -490,7 +521,8 @@ export async function syncSite(site: PartnerSite, onProgress?: (e: SyncProgressE
           const result = await firecrawl.scrape(url, {
             formats: ['markdown'],
             onlyMainContent: false,
-            timeout: 45000,
+            timeout: site.needsJavascript ? 90000 : 45000,
+            ...(site.needsJavascript ? { waitFor: 3000 } : {}),
           });
           const markdown = (result as Record<string, unknown>).markdown as string | undefined ?? '';
           const raw = await extractFromMarkdown(markdown, url);
@@ -548,6 +580,30 @@ export async function syncSite(site: PartnerSite, onProgress?: (e: SyncProgressE
       },
     });
 
+    // Coverage metrics — log quality signal; warn if below 70%
+    try {
+      const [total, withPhoto, withPrice, withNeighborhood] = await Promise.all([
+        prisma.propertySource_.count({ where: { partnerSiteId: site.id } }),
+        prisma.propertySource_.count({ where: { partnerSiteId: site.id, NOT: { photos: { equals: [] } } } }),
+        prisma.property.count({ where: { active: true, sources: { some: { partnerSiteId: site.id } }, price: { gt: 0 } } }),
+        prisma.property.count({ where: { active: true, sources: { some: { partnerSiteId: site.id } }, NOT: { neighborhood: null } } }),
+      ]);
+      const pctPhoto = total > 0 ? Math.round((withPhoto / total) * 100) : 0;
+      const pctPrice = total > 0 ? Math.round((withPrice / total) * 100) : 0;
+      const pctNeighborhood = total > 0 ? Math.round((withNeighborhood / total) * 100) : 0;
+      const logLevel = (pctPhoto < 70 || pctPrice < 70 || pctNeighborhood < 70) ? 'warn' : 'info';
+      logger[logLevel]('site_sync_coverage', {
+        domain: site.domain,
+        total,
+        pctPhoto,
+        pctPrice,
+        pctNeighborhood,
+        alert: logLevel === 'warn',
+      });
+    } catch {
+      // Non-critical — don't fail the sync for coverage check errors
+    }
+
     const durationMs = Date.now() - start;
     logger.info('site_sync_complete', { domain: site.domain, added, removed, errors, durationMs });
     return { added, removed, errors, durationMs };
@@ -584,6 +640,7 @@ async function extractFromMarkdown(
   try {
     const resp = await callLLM({
       model: MODELS.listingSync,
+      fallbackModels: MODEL_FALLBACKS.listingSync,
       system: EXTRACTION_SYSTEM_PROMPT,
       prompt: markdown.slice(0, 4000),
       jsonMode: true,
@@ -633,6 +690,7 @@ async function extractBulkFromMarkdown(
       batch.map((chunk) =>
         callLLM({
           model: MODELS.listingSync,
+          fallbackModels: MODEL_FALLBACKS.listingSync,
           system: BULK_EXTRACTION_SYSTEM_PROMPT,
           prompt: chunk,
           jsonMode: true,
@@ -689,12 +747,21 @@ function inferPriceType(raw: Record<string, unknown>, url: string): 'sale' | 're
   return 'sale';
 }
 
-// Strip query params and trailing slash so ?from=sale and ?ref=map variants
-// don't create duplicate records for the same physical listing.
+// Known query param names that identify a specific listing (not filters/tracking)
+const LISTING_ID_PARAMS = new Set(['imovel', 'id', 'listing', 'ref', 'codigo', 'cod', 'property', 'imobiliaria_id', 'property_id', 'item']);
+
 function canonicalListingUrl(url: string): string {
   try {
     const u = new URL(url);
-    return (u.origin + u.pathname).replace(/\/+$/, '');
+    // Preserve query params that look like listing IDs (numeric or short alphanumeric)
+    const idParams: string[] = [];
+    for (const [key, value] of u.searchParams.entries()) {
+      if (LISTING_ID_PARAMS.has(key.toLowerCase()) && /^[a-zA-Z0-9_-]{1,40}$/.test(value)) {
+        idParams.push(`${key}=${value}`);
+      }
+    }
+    const base = (u.origin + u.pathname).replace(/\/+$/, '');
+    return idParams.length > 0 ? `${base}?${idParams.join('&')}` : base;
   } catch {
     return url.split('?')[0]!.replace(/\/+$/, '');
   }
@@ -716,7 +783,16 @@ async function upsertListing(
   const parking = typeof raw.parking === 'number' ? raw.parking : null;
   const neighborhood = typeof raw.neighborhood === 'string' ? raw.neighborhood : '';
   const city = typeof raw.city === 'string' && raw.city ? raw.city : 'Rio de Janeiro';
-  const coverPhoto = typeof raw.image_url === 'string' ? raw.image_url : null;
+  // Collect all photos: prefer image_urls[] array, fall back to image_url string
+  const rawPhotos: string[] = Array.isArray(raw.image_urls)
+    ? (raw.image_urls as unknown[]).filter((u): u is string => typeof u === 'string' && u.length > 0)
+    : [];
+  const coverPhoto = typeof raw.image_url === 'string' && raw.image_url ? raw.image_url : null;
+  const allPhotos = rawPhotos.length > 0
+    ? rawPhotos
+    : coverPhoto
+      ? [coverPhoto]
+      : [];
   const description = typeof raw.description === 'string' ? raw.description : '';
   const address = typeof raw.address === 'string' ? raw.address.toLowerCase().trim() : '';
   const propertyType = mapPropertyType(typeof raw.property_type === 'string' ? raw.property_type : '');
@@ -748,7 +824,7 @@ async function upsertListing(
           rawPrice: price,
           url: canonicalUrl,
           ...(description ? { description } : {}),
-          ...(coverPhoto ? { photos: [coverPhoto] } : {}),
+          ...(allPhotos.length > 0 ? { photos: allPhotos } : {}),
           scrapedAt: new Date(),
           partnerSiteId: site.id,
         },
@@ -782,7 +858,7 @@ async function upsertListing(
           url: canonicalUrl,
           title: String(raw.title ?? ''),
           description: description || undefined,
-          photos: coverPhoto ? [coverPhoto] : [],
+          photos: allPhotos,
           rawPrice: sanitizedPrice,
           rawData: raw as object,
           partnerSiteId: site.id,
@@ -804,7 +880,11 @@ async function upsertListing(
 type WpFieldMode = 'direct' | 'meta' | 'url_only';
 
 function detectWpFieldMode(item: Record<string, unknown>): { mode: WpFieldMode; metaPrefix: string } {
-  const directPriceFields = ['valor', 'preco', 'price', 'valor_venda', 'preco_venda'];
+  const directPriceFields = [
+    'valor', 'preco', 'price', 'valor_venda', 'preco_venda',
+    'valor_total', 'preco_total', 'venda', 'sale_price', 'list_price',
+    'valor_locacao', 'preco_locacao', 'rent_price', 'aluguel',
+  ];
   for (const f of directPriceFields) {
     if (item[f] !== undefined && item[f] !== null && item[f] !== '' && Number(item[f]) > 0) {
       return { mode: 'direct', metaPrefix: '' };
@@ -854,6 +934,18 @@ function extractFromWpMeta(meta: Record<string, unknown>, prefix: string): Recor
     property_type: String(g('tipo') ?? ''),
     priceType,
     image_url: String(g('foto_destaque') ?? g('imagem_destaque') ?? g('foto_principal') ?? '') || undefined,
+    // Some CRMs store gallery as an array field (fotos[], galeria[], imagens[])
+    image_urls: (() => {
+      for (const key of ['fotos', 'galeria', 'imagens', 'photos', 'gallery', 'images']) {
+        const val = g(key);
+        if (Array.isArray(val) && val.length > 0) {
+          return (val as unknown[])
+            .map((v) => (typeof v === 'string' ? v : typeof v === 'object' && v !== null ? String((v as Record<string,unknown>).url ?? (v as Record<string,unknown>).src ?? '') : ''))
+            .filter((u) => u.length > 0);
+        }
+      }
+      return undefined;
+    })(),
   };
 }
 
@@ -880,9 +972,12 @@ async function syncSiteViaWpApi(site: PartnerSite, cpt: string, onProgress?: (e:
   let page = 1;
 
   while (true) {
+    // NOTE: Do NOT add _fields here. WordPress REST API applies _fields filtering
+    // to the entire response including _embedded content — combining _fields with
+    // _embed causes _embedded['wp:featuredmedia'] to return empty objects with no
+    // source_url. Omitting _fields lets _embed work correctly for all WP sites.
     const pageUrl =
-      `${apiBase}?per_page=${PER_PAGE}&page=${page}` +
-      `&_fields=id,link,title,meta,valor,quartos,suites,vagas,metragem,c_url`;
+      `${apiBase}?per_page=${PER_PAGE}&page=${page}&_embed=wp:featuredmedia`;
 
     let items: Record<string, unknown>[] = [];
     try {
@@ -910,14 +1005,34 @@ async function syncSiteViaWpApi(site: PartnerSite, cpt: string, onProgress?: (e:
       const canonical = canonicalListingUrl(link);
       allCanonicalUrls.push(canonical);
 
+      // Extract all photo URLs from _embedded (present when _embed=wp:featuredmedia is used).
+      // featuredArr can have multiple entries — collect source_url from all of them.
+      const embedded = item._embedded as Record<string, unknown> | undefined;
+      const featuredArr = Array.isArray(embedded?.['wp:featuredmedia'])
+        ? (embedded!['wp:featuredmedia'] as Record<string, unknown>[])
+        : [];
+      const embeddedImageUrls = featuredArr
+        .map((m) => m.source_url as string | undefined)
+        .filter((u): u is string => typeof u === 'string' && u.length > 0);
+      const embeddedImageUrl = embeddedImageUrls[0];
+
       let raw: Record<string, unknown>;
 
       if (fieldMode === 'meta') {
         const meta = (item.meta && !Array.isArray(item.meta) ? item.meta : {}) as Record<string, unknown>;
+        const metaExtracted = extractFromWpMeta(meta, metaPrefix);
+        // Merge meta image(s) with embedded featured media photos
+        const metaPhotos = Array.isArray(metaExtracted.image_urls)
+          ? (metaExtracted.image_urls as string[])
+          : metaExtracted.image_url
+            ? [String(metaExtracted.image_url)]
+            : [];
+        const mergedPhotos = [...new Set([...metaPhotos, ...embeddedImageUrls])].filter(Boolean);
         raw = {
           url: canonical,
           title: (item.title as { rendered?: string } | undefined)?.rendered ?? '',
-          ...extractFromWpMeta(meta, metaPrefix),
+          ...metaExtracted,
+          image_urls: mergedPhotos.length > 0 ? mergedPhotos : undefined,
         };
       } else {
         // direct mode — fields live at the top level (Invexo/estate style)
@@ -937,15 +1052,17 @@ async function syncSiteViaWpApi(site: PartnerSite, cpt: string, onProgress?: (e:
         raw = {
           url: canonical,
           title: (item.title as { rendered?: string } | undefined)?.rendered ?? '',
-          price: Number(item.valor ?? item.preco ?? item.price ?? 0),
-          bedrooms: Number(item.quartos ?? 0) || null,
-          bathrooms: null,
-          area_sqm: Number(item.metragem ?? item.area ?? 0) || null,
-          parking: Number(item.vagas ?? 0) || null,
+          price: Number(item.valor ?? item.preco ?? item.price ?? item.valor_venda ?? item.preco_venda ?? item.venda ?? item.valor_total ?? 0),
+          bedrooms: Number(item.quartos ?? item.dormitorios ?? item.bedrooms ?? item.rooms ?? 0) || null,
+          bathrooms: Number(item.banheiros ?? item.suites ?? item.bathrooms ?? 0) || null,
+          area_sqm: Number(item.metragem ?? item.area ?? item.area_total ?? item.area_util ?? item.area_privativa ?? 0) || null,
+          parking: Number(item.vagas ?? item.garagem ?? item.parking ?? 0) || null,
           neighborhood,
           city: 'Rio de Janeiro',
           property_type: mapTypeFromUrlSlug(typeSlug),
           _priceType: 'sale' as const,
+          // Use all embedded media photos (featured + any extras)
+          image_urls: embeddedImageUrls.length > 0 ? embeddedImageUrls : undefined,
         };
       }
 
@@ -991,6 +1108,30 @@ async function syncSiteViaWpApi(site: PartnerSite, cpt: string, onProgress?: (e:
       listingCount: allCanonicalUrls.length,
     },
   });
+
+  // Coverage metrics — log quality signal; warn if below 70%
+  try {
+    const [total, withPhoto, withPrice, withNeighborhood] = await Promise.all([
+      prisma.propertySource_.count({ where: { partnerSiteId: site.id } }),
+      prisma.propertySource_.count({ where: { partnerSiteId: site.id, NOT: { photos: { equals: [] } } } }),
+      prisma.property.count({ where: { active: true, sources: { some: { partnerSiteId: site.id } }, price: { gt: 0 } } }),
+      prisma.property.count({ where: { active: true, sources: { some: { partnerSiteId: site.id } }, NOT: { neighborhood: null } } }),
+    ]);
+    const pctPhoto = total > 0 ? Math.round((withPhoto / total) * 100) : 0;
+    const pctPrice = total > 0 ? Math.round((withPrice / total) * 100) : 0;
+    const pctNeighborhood = total > 0 ? Math.round((withNeighborhood / total) * 100) : 0;
+    const logLevel = (pctPhoto < 70 || pctPrice < 70 || pctNeighborhood < 70) ? 'warn' : 'info';
+    logger[logLevel]('site_sync_coverage', {
+      domain: site.domain,
+      total,
+      pctPhoto,
+      pctPrice,
+      pctNeighborhood,
+      alert: logLevel === 'warn',
+    });
+  } catch {
+    // Non-critical — don't fail the sync for coverage check errors
+  }
 
   const durationMs = Date.now() - start;
   logger.info('wp_api_sync_complete', { domain: site.domain, cpt, added, removed, errors, durationMs });
@@ -1211,10 +1352,15 @@ async function syncSiteViaSiteMidasApi(site: PartnerSite, onProgress?: (e: SyncP
     const neighborhood = localizacao.split(',')[0]?.trim() ?? '';
     const city = localizacao.split(',')[1]?.split('-')[0]?.trim() ?? 'Rio de Janeiro';
 
-    // Main photo from imagem_caminho array
+    // Extract all photos from imagem_caminho array — principal=1 goes first
     const fotos = Array.isArray(item.imagem_caminho) ? item.imagem_caminho as Record<string, unknown>[] : [];
-    const mainFoto = fotos.find((f) => f.principal === '1') ?? fotos[0];
-    const imageUrl = mainFoto ? String(mainFoto.imagem_caminho ?? '') : '';
+    const fotosOrdered = [
+      ...fotos.filter((f) => f.principal === '1'),
+      ...fotos.filter((f) => f.principal !== '1'),
+    ];
+    const imageUrls = fotosOrdered
+      .map((f) => String(f.imagem_caminho ?? ''))
+      .filter((u) => u.length > 0);
 
     const raw: Record<string, unknown> = {
       title: String(item.titulo ?? ''),
@@ -1226,7 +1372,7 @@ async function syncSiteViaSiteMidasApi(site: PartnerSite, onProgress?: (e: SyncP
       neighborhood,
       city,
       property_type: String(item.tipoImovel ?? ''),
-      image_url: imageUrl || undefined,
+      image_urls: imageUrls.length > 0 ? imageUrls : undefined,
       priceType,
     };
 
@@ -1269,6 +1415,30 @@ async function syncSiteViaSiteMidasApi(site: PartnerSite, onProgress?: (e: SyncP
       listingCount: allCanonicalUrls.length,
     },
   });
+
+  // Coverage metrics — log quality signal; warn if below 70%
+  try {
+    const [total, withPhoto, withPrice, withNeighborhood] = await Promise.all([
+      prisma.propertySource_.count({ where: { partnerSiteId: site.id } }),
+      prisma.propertySource_.count({ where: { partnerSiteId: site.id, NOT: { photos: { equals: [] } } } }),
+      prisma.property.count({ where: { active: true, sources: { some: { partnerSiteId: site.id } }, price: { gt: 0 } } }),
+      prisma.property.count({ where: { active: true, sources: { some: { partnerSiteId: site.id } }, NOT: { neighborhood: null } } }),
+    ]);
+    const pctPhoto = total > 0 ? Math.round((withPhoto / total) * 100) : 0;
+    const pctPrice = total > 0 ? Math.round((withPrice / total) * 100) : 0;
+    const pctNeighborhood = total > 0 ? Math.round((withNeighborhood / total) * 100) : 0;
+    const logLevel = (pctPhoto < 70 || pctPrice < 70 || pctNeighborhood < 70) ? 'warn' : 'info';
+    logger[logLevel]('site_sync_coverage', {
+      domain: site.domain,
+      total,
+      pctPhoto,
+      pctPrice,
+      pctNeighborhood,
+      alert: logLevel === 'warn',
+    });
+  } catch {
+    // Non-critical — don't fail the sync for coverage check errors
+  }
 
   const durationMs = Date.now() - start;
   logger.info('sitemidas_api_sync_complete', { domain: site.domain, added, removed, errors, durationMs });
@@ -1322,7 +1492,10 @@ async function syncSiteViaKenloApi(site: PartnerSite, onProgress?: (e: SyncProgr
         neighborhood: String(item.neighborhood ?? item.neighborhood_display ?? ''),
         city: String(item.city ?? ''),
         property_type: String(item.property_type ?? ''),
-        image_url: String(item.picture_full ?? '') || undefined,
+        image_urls: Object.keys(item)
+          .filter((k) => k.startsWith('picture_') && typeof item[k] === 'string' && (item[k] as string).length > 0)
+          .sort((a, b) => (a === 'picture_full' ? -1 : b === 'picture_full' ? 1 : a.localeCompare(b)))
+          .map((k) => item[k] as string) || undefined,
         priceType,
       };
 
@@ -1357,6 +1530,30 @@ async function syncSiteViaKenloApi(site: PartnerSite, onProgress?: (e: SyncProgr
     where: { id: site.id },
     data: { syncStatus: 'done', lastScrapedAt: new Date(), lastSuccessAt: new Date(), consecutiveFailures: 0, listingCount: allCanonicalUrls.length },
   });
+
+  // Coverage metrics — log quality signal; warn if below 70%
+  try {
+    const [total, withPhoto, withPrice, withNeighborhood] = await Promise.all([
+      prisma.propertySource_.count({ where: { partnerSiteId: site.id } }),
+      prisma.propertySource_.count({ where: { partnerSiteId: site.id, NOT: { photos: { equals: [] } } } }),
+      prisma.property.count({ where: { active: true, sources: { some: { partnerSiteId: site.id } }, price: { gt: 0 } } }),
+      prisma.property.count({ where: { active: true, sources: { some: { partnerSiteId: site.id } }, NOT: { neighborhood: null } } }),
+    ]);
+    const pctPhoto = total > 0 ? Math.round((withPhoto / total) * 100) : 0;
+    const pctPrice = total > 0 ? Math.round((withPrice / total) * 100) : 0;
+    const pctNeighborhood = total > 0 ? Math.round((withNeighborhood / total) * 100) : 0;
+    const logLevel = (pctPhoto < 70 || pctPrice < 70 || pctNeighborhood < 70) ? 'warn' : 'info';
+    logger[logLevel]('site_sync_coverage', {
+      domain: site.domain,
+      total,
+      pctPhoto,
+      pctPrice,
+      pctNeighborhood,
+      alert: logLevel === 'warn',
+    });
+  } catch {
+    // Non-critical — don't fail the sync for coverage check errors
+  }
 
   const durationMs = Date.now() - start;
   logger.info('kenlo_api_sync_complete', { domain: site.domain, pages: page - 1, added, removed, errors, durationMs });
@@ -1476,8 +1673,214 @@ async function syncSiteViaKarocaBuscar(site: PartnerSite, onProgress?: (e: SyncP
     data: { syncStatus: 'done', lastScrapedAt: new Date(), lastSuccessAt: new Date(), consecutiveFailures: 0, listingCount: allCanonicalUrls.length },
   });
 
+  // Coverage metrics — log quality signal; warn if below 70%
+  try {
+    const [total, withPhoto, withPrice, withNeighborhood] = await Promise.all([
+      prisma.propertySource_.count({ where: { partnerSiteId: site.id } }),
+      prisma.propertySource_.count({ where: { partnerSiteId: site.id, NOT: { photos: { equals: [] } } } }),
+      prisma.property.count({ where: { active: true, sources: { some: { partnerSiteId: site.id } }, price: { gt: 0 } } }),
+      prisma.property.count({ where: { active: true, sources: { some: { partnerSiteId: site.id } }, NOT: { neighborhood: null } } }),
+    ]);
+    const pctPhoto = total > 0 ? Math.round((withPhoto / total) * 100) : 0;
+    const pctPrice = total > 0 ? Math.round((withPrice / total) * 100) : 0;
+    const pctNeighborhood = total > 0 ? Math.round((withNeighborhood / total) * 100) : 0;
+    const logLevel = (pctPhoto < 70 || pctPrice < 70 || pctNeighborhood < 70) ? 'warn' : 'info';
+    logger[logLevel]('site_sync_coverage', {
+      domain: site.domain,
+      total,
+      pctPhoto,
+      pctPrice,
+      pctNeighborhood,
+      alert: logLevel === 'warn',
+    });
+  } catch {
+    // Non-critical — don't fail the sync for coverage check errors
+  }
+
   const durationMs = Date.now() - start;
   logger.info('karioca_buscar_sync_complete', { domain: site.domain, added, removed, errors, durationMs });
+  return { added, removed, errors, durationMs };
+}
+
+// ---------------------------------------------------------------------------
+// syncSiteViaVistaHostApi — Vista Software / VistaHost CMS
+//
+// VistaHost is the most common real estate CMS for mid-size brokerages in RJ.
+// The platform exposes listings via a JSON API that varies slightly by version:
+//   v1: GET /imoveis?finalidade=venda&pagina=N  → { imoveis: [...] }
+//   v2: GET /imoveis/resultado.json?pagina=N    → { imoveis: [...], total: N }
+//   v3: GET /api/v1/imoveis?page=N              → { data: [...] }
+// We probe all three until one returns data, then paginate.
+// ---------------------------------------------------------------------------
+
+async function syncSiteViaVistaHostApi(site: PartnerSite, onProgress?: (e: SyncProgressEvent) => void): Promise<SyncResult> {
+  const base = site.baseUrl.replace(/\/$/, '');
+  const start = Date.now();
+  let added = 0, removed = 0, errors = 0;
+  const allCanonicalUrls: string[] = [];
+
+  // Probe which API endpoint this site uses
+  type VistaEndpoint = { url: string; version: 'v1' | 'v2' | 'v3'; pageParam: string };
+  let endpoint: VistaEndpoint | null = null;
+
+  const candidates: VistaEndpoint[] = [
+    { url: `${base}/imoveis/resultado.json`, version: 'v2', pageParam: 'pagina' },
+    { url: `${base}/imoveis`, version: 'v1', pageParam: 'pagina' },
+    { url: `${base}/api/v1/imoveis`, version: 'v3', pageParam: 'page' },
+    { url: `${base}/api/imoveis`, version: 'v3', pageParam: 'page' },
+  ];
+
+  for (const candidate of candidates) {
+    try {
+      const probeUrl = `${candidate.url}?finalidade=venda&${candidate.pageParam}=1`;
+      const resp = await fetch(probeUrl, {
+        headers: { Accept: 'application/json', 'User-Agent': 'Mozilla/5.0' },
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (!resp.ok) continue;
+      const data = await resp.json() as Record<string, unknown>;
+      const items = (data.imoveis ?? data.data ?? []) as unknown[];
+      if (items.length > 0) {
+        endpoint = candidate;
+        logger.info('vistahost_api_endpoint_detected', { domain: site.domain, version: candidate.version, url: candidate.url });
+        break;
+      }
+    } catch {
+      // Try next candidate
+    }
+  }
+
+  if (!endpoint) {
+    logger.warn('vistahost_api_no_endpoint', { domain: site.domain });
+    await prisma.partnerSite.update({ where: { id: site.id }, data: { syncStatus: 'done', lastScrapedAt: new Date() } });
+    return { added: 0, removed: 0, errors: 0, durationMs: Date.now() - start };
+  }
+
+  // Paginate through both venda and aluguel
+  for (const [finalidade, priceType] of [['venda', 'sale'], ['aluguel', 'rent']] as const) {
+    let page = 1;
+    while (true) {
+      const pageUrl = `${endpoint.url}?finalidade=${finalidade}&${endpoint.pageParam}=${page}`;
+      let items: Record<string, unknown>[];
+      try {
+        const resp = await fetch(pageUrl, {
+          headers: { Accept: 'application/json', 'User-Agent': 'Mozilla/5.0' },
+          signal: AbortSignal.timeout(30_000),
+        });
+        if (!resp.ok) break;
+        const data = await resp.json() as Record<string, unknown>;
+        items = ((data.imoveis ?? data.data ?? []) as Record<string, unknown>[]);
+      } catch (err) {
+        logger.warn('vistahost_api_fetch_error', { domain: site.domain, finalidade, page, error: String(err) });
+        break;
+      }
+      if (items.length === 0) break;
+
+      for (const item of items) {
+        // VistaHost URL patterns: /imoveis/venda/bairro/ref or /imovel/ref
+        const relUrl = String(item.link ?? item.url ?? item.slug ?? '');
+        if (!relUrl) { errors++; continue; }
+        const url = canonicalListingUrl(relUrl.startsWith('http') ? relUrl : `${base}${relUrl.startsWith('/') ? '' : '/'}${relUrl}`);
+        allCanonicalUrls.push(url);
+
+        // Price: VistaHost uses various field names across versions
+        const price = Number(
+          item.valor_venda ?? item.preco_venda ?? item.valor ?? item.preco ??
+          item.valor_aluguel ?? item.preco_aluguel ?? 0
+        );
+
+        // Photos: VistaHost typically has `fotos` array or `foto_principal`
+        const fotosRaw = Array.isArray(item.fotos) ? item.fotos as Record<string, unknown>[] : [];
+        const imageUrls = fotosRaw
+          .map((f) => {
+            const src = String(f.link ?? f.url ?? f.src ?? f.arquivo ?? '');
+            // VistaHost images may be relative paths to their CDN
+            return src.startsWith('http') ? src : src ? `https://cdn.vistahost.com.br${src.startsWith('/') ? '' : '/'}${src}` : '';
+          })
+          .filter((u) => u.length > 0);
+        const fotoPrincipal = String(item.foto_principal ?? item.foto ?? item.imagem ?? '');
+        if (fotoPrincipal && !imageUrls.includes(fotoPrincipal)) {
+          imageUrls.unshift(fotoPrincipal.startsWith('http') ? fotoPrincipal : `https://cdn.vistahost.com.br${fotoPrincipal}`);
+        }
+
+        // Neighborhood from localizacao or bairro field
+        const neighborhood = String(item.bairro ?? item.neighborhood ?? (String(item.localizacao ?? '').split(',')[0] ?? '')).trim();
+
+        const raw: Record<string, unknown> = {
+          title: String(item.titulo ?? item.title ?? item.nome ?? ''),
+          price,
+          bedrooms: Number(item.quartos ?? item.dormitorios ?? item.bedrooms ?? 0) || null,
+          bathrooms: Number(item.banheiros ?? item.suites ?? 0) || null,
+          area_sqm: Number(item.area_total ?? item.area ?? item.metragem ?? 0) || null,
+          parking: Number(item.vagas ?? item.garagem ?? 0) || null,
+          neighborhood,
+          city: String(item.cidade ?? 'Rio de Janeiro'),
+          property_type: String(item.tipo ?? item.category ?? ''),
+          image_urls: imageUrls.length > 0 ? imageUrls : undefined,
+          priceType,
+        };
+
+        if (!raw.price || !raw.title) { errors++; continue; }
+        try {
+          await upsertListing(raw, url, site, priceType);
+          added++;
+        } catch (err) {
+          logger.warn('vistahost_api_upsert_error', { domain: site.domain, url, error: String(err) });
+          errors++;
+        }
+      }
+
+      logger.info('vistahost_api_page_done', { domain: site.domain, finalidade, page, fetched: items.length });
+      onProgress?.({ phase: 'page', page, fetched: items.length, added });
+      page++;
+      if (page > 200) break;
+    }
+  }
+
+  // Mark removed
+  const knownSources = await prisma.propertySource_.findMany({
+    where: { partnerSiteId: site.id },
+    select: { url: true, propertyId: true },
+  });
+  const currentSet = new Set(allCanonicalUrls);
+  const removedSources = knownSources.filter((s) => !currentSet.has(s.url));
+  if (removedSources.length > 0) {
+    const ids = [...new Set(removedSources.map((s) => s.propertyId))];
+    await prisma.property.updateMany({ where: { id: { in: ids } }, data: { active: false } });
+    removed = ids.length;
+  }
+
+  await prisma.partnerSite.update({
+    where: { id: site.id },
+    data: { syncStatus: 'done', lastScrapedAt: new Date(), lastSuccessAt: new Date(), consecutiveFailures: 0, listingCount: allCanonicalUrls.length },
+  });
+
+  // Coverage metrics — log quality signal; warn if below 70%
+  try {
+    const [total, withPhoto, withPrice, withNeighborhood] = await Promise.all([
+      prisma.propertySource_.count({ where: { partnerSiteId: site.id } }),
+      prisma.propertySource_.count({ where: { partnerSiteId: site.id, NOT: { photos: { equals: [] } } } }),
+      prisma.property.count({ where: { active: true, sources: { some: { partnerSiteId: site.id } }, price: { gt: 0 } } }),
+      prisma.property.count({ where: { active: true, sources: { some: { partnerSiteId: site.id } }, NOT: { neighborhood: null } } }),
+    ]);
+    const pctPhoto = total > 0 ? Math.round((withPhoto / total) * 100) : 0;
+    const pctPrice = total > 0 ? Math.round((withPrice / total) * 100) : 0;
+    const pctNeighborhood = total > 0 ? Math.round((withNeighborhood / total) * 100) : 0;
+    const logLevel = (pctPhoto < 70 || pctPrice < 70 || pctNeighborhood < 70) ? 'warn' : 'info';
+    logger[logLevel]('site_sync_coverage', {
+      domain: site.domain,
+      total,
+      pctPhoto,
+      pctPrice,
+      pctNeighborhood,
+      alert: logLevel === 'warn',
+    });
+  } catch {
+    // Non-critical — don't fail the sync for coverage check errors
+  }
+
+  const durationMs = Date.now() - start;
+  logger.info('vistahost_api_sync_complete', { domain: site.domain, added, removed, errors, durationMs });
   return { added, removed, errors, durationMs };
 }
 

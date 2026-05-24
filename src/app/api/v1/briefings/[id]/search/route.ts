@@ -1,9 +1,11 @@
 import type { NextRequest } from 'next/server';
 import { requireAuth } from '@/server/auth/context';
 import { withRlsContext } from '@/server/db/client';
+import { prisma } from '@/server/db/client';
 import { apiSuccess, apiError } from '@/server/lib/response';
 import { AppError } from '@/server/lib/errors';
 import { searchQueue } from '@/server/search/queue';
+import { enqueueSiteSync } from '@/server/partners/sync-queue';
 import { toSearchCriteria } from '@/server/briefings/criteria-transform';
 import type { ExtractedCriteria } from '@/server/briefings/extract';
 
@@ -78,6 +80,25 @@ export async function POST(
       partnerSiteIds: briefing.selectedPortals,
       customUrls: briefing.customUrls,
     });
+
+    // Auto-sync partner sites that have no indexed stock (fire-and-forget).
+    // When a broker searches a site that hasn't been synced yet, we kick off a
+    // background sync so the next search (by anyone) hits the DB instead of scraping live.
+    if (briefing.selectedPortals && briefing.selectedPortals.length > 0) {
+      const unindexed = await prisma.partnerSite.findMany({
+        where: {
+          id: { in: briefing.selectedPortals as string[] },
+          listingCount: 0,
+          syncStatus: { not: 'running' },
+          consecutiveFailures: { lt: 5 },
+          active: true,
+        },
+        select: { id: true, domain: true },
+      });
+      for (const site of unindexed) {
+        await enqueueSiteSync(site.id);
+      }
+    }
 
     return apiSuccess({ jobId: job.id, status: 'searching' }, 202);
   } catch (err) {
