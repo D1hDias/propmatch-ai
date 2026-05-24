@@ -42,6 +42,7 @@ const EXTRACTION_SYSTEM_PROMPT =
 
 // JSON schema sent to Firecrawl for structured extraction from a search-results page.
 // Firecrawl's internal LLM is more accurate than calling our LLM on raw markdown.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 const SEED_PAGE_SCHEMA = {
   type: 'object',
   properties: {
@@ -82,6 +83,7 @@ const BULK_EXTRACTION_SYSTEM_PROMPT =
   'Omita campos não encontrados. Responda APENAS com o JSON object {"listings":[...]}.';
 
 // Max listing URLs per batchScrape call (Firecrawl recommendation: ≤25)
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 const BATCH_SIZE = 25;
 
 // Default URL path fragments that identify individual listing pages
@@ -1014,8 +1016,6 @@ async function syncSiteViaWpApi(site: PartnerSite, cpt: string, onProgress?: (e:
       const embeddedImageUrls = featuredArr
         .map((m) => m.source_url as string | undefined)
         .filter((u): u is string => typeof u === 'string' && u.length > 0);
-      const embeddedImageUrl = embeddedImageUrls[0];
-
       let raw: Record<string, unknown>;
 
       if (fieldMode === 'meta') {

@@ -19,6 +19,7 @@ export interface MatchedListing {
   reason: string;
 }
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 const MATCH_RESPONSE_SCHEMA = {
   type: 'object' as const,
   properties: {

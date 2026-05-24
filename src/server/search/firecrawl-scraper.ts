@@ -361,7 +361,7 @@ export async function mapAndScrapeWithFirecrawl(
     // Detect sitemap XML URLs — fetch these directly (no JS, no cookie consent)
     // to get individual property URLs. Common on Kenlo-platform sites.
     const sitemapXmlUrls = allUrls.filter((u) => u.match(/\.xml(\?|$)/i));
-    let sitemapListingUrls: string[] = [];
+    const sitemapListingUrls: string[] = [];
     if (sitemapXmlUrls.length > 0) {
       logger.info('firecrawl map found sitemap XMLs — fetching property URLs', {
         sitemaps: sitemapXmlUrls.slice(0, 3),

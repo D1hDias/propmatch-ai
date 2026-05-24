@@ -36,7 +36,7 @@ interface SourceSelectorProps {
   disabled: boolean;
 }
 
-function SourceSelector({ selectedPartnerIds, onSelectionChange, disabled }: SourceSelectorProps) {
+function SourceSelector({ selectedPartnerIds, onSelectionChange, disabled: _disabled }: SourceSelectorProps) {
   return (
     <div className="space-y-2">
       <p className="text-sm font-semibold text-foreground">Onde buscar</p>
