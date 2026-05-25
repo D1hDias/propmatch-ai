@@ -1,5 +1,6 @@
 import 'server-only';
 import { Queue, Worker, type Job } from 'bullmq';
+import { Redis } from 'ioredis';
 import { logger } from '@/server/lib/logger';
 import { prisma } from '@/server/db/client';
 import { runSearch } from './run-search';
@@ -12,15 +13,10 @@ import type { SearchCriteria, NormalizedListing } from './types';
 
 const REDIS_URL = process.env.REDIS_URL ?? 'redis://localhost:6379';
 
+// Let ioredis parse the URL directly — it handles rediss://, TLS, and special
+// characters in passwords correctly without manual URL decomposition.
 function redisConnection() {
-  const url = new URL(REDIS_URL);
-  return {
-    host: url.hostname,
-    port: Number(url.port) || 6379,
-    username: url.username || (url.protocol === 'rediss:' ? 'default' : undefined),
-    password: url.password || undefined,
-    ...(url.protocol === 'rediss:' ? { tls: {} } : {}),
-  };
+  return new Redis(REDIS_URL, { maxRetriesPerRequest: null, enableReadyCheck: false });
 }
 
 const connection = redisConnection();

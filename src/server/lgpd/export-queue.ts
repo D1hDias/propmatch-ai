@@ -1,19 +1,13 @@
 import 'server-only';
 import { Queue, Worker, type Job } from 'bullmq';
+import { Redis } from 'ioredis';
 import { logger } from '@/server/lib/logger';
 import { executeExport } from './export-service';
 
 const REDIS_URL = process.env.REDIS_URL ?? 'redis://localhost:6379';
 
 function redisConnection() {
-  const url = new URL(REDIS_URL);
-  return {
-    host: url.hostname,
-    port: parseInt(url.port, 10) || 6379,
-    username: url.username || (url.protocol === 'rediss:' ? 'default' : undefined),
-    password: url.password || undefined,
-    ...(url.protocol === 'rediss:' ? { tls: {} } : {}),
-  };
+  return new Redis(REDIS_URL, { maxRetriesPerRequest: null, enableReadyCheck: false });
 }
 
 export interface ExportJobData {

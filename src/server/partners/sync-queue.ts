@@ -1,5 +1,6 @@
 import 'server-only';
 import { Queue, Worker, type Job } from 'bullmq';
+import { Redis } from 'ioredis';
 import { logger } from '@/server/lib/logger';
 import { prisma } from '@/server/db/client';
 import { syncSite } from './site-sync';
@@ -7,14 +8,7 @@ import { syncSite } from './site-sync';
 const REDIS_URL = process.env.REDIS_URL ?? 'redis://localhost:6379';
 
 function redisConnection() {
-  const url = new URL(REDIS_URL);
-  return {
-    host: url.hostname,
-    port: Number(url.port) || 6379,
-    username: url.username || (url.protocol === 'rediss:' ? 'default' : undefined),
-    password: url.password || undefined,
-    ...(url.protocol === 'rediss:' ? { tls: {} } : {}),
-  };
+  return new Redis(REDIS_URL, { maxRetriesPerRequest: null, enableReadyCheck: false });
 }
 
 const connection = redisConnection();
