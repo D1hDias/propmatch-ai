@@ -10,6 +10,7 @@ function redisConnection() {
   return {
     host: url.hostname,
     port: parseInt(url.port, 10) || 6379,
+    username: url.username || undefined,
     password: url.password || undefined,
     ...(url.protocol === 'rediss:' ? { tls: {} } : {}),
   };
