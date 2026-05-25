@@ -124,3 +124,47 @@ www.propmatch.com.br {
 status.propmatch.com.br {
   redir https://propmatch.betteruptime.com permanent
 }
+
+# ------------------------------------------------------------------
+# Firecrawl self-hosted — acesso externo para Vercel
+# O app na Vercel não consegue aceder a localhost:3002, por isso
+# expõe o Firecrawl via subdomínio com TLS automático (Let's Encrypt).
+# A autenticação é feita pela API key do Firecrawl (Bearer token).
+# NUNCA remover este bloco enquanto FIRECRAWL_API_URL na Vercel
+# apontar para este subdomínio.
+# ------------------------------------------------------------------
+firecrawl.propmatch.com.br {
+  reverse_proxy localhost:3002 {
+    transport http {
+      response_header_timeout 120s
+      dial_timeout 5s
+    }
+    header_up X-Real-IP {remote_host}
+    header_up X-Forwarded-For {remote_host}
+    header_up X-Forwarded-Proto {scheme}
+  }
+
+  # Bloqueia qualquer request sem Authorization header
+  @noauth {
+    not header Authorization *
+  }
+  respond @noauth 401 {
+    body "Unauthorized"
+    close
+  }
+
+  header {
+    -Server
+    X-Content-Type-Options "nosniff"
+    X-Frame-Options "DENY"
+    Cache-Control "no-store"
+  }
+
+  log {
+    output file /var/log/caddy/firecrawl.log {
+      roll_size 50MiB
+      roll_keep 5
+    }
+    format json
+  }
+}
