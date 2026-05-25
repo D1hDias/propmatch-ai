@@ -68,6 +68,9 @@ importers:
       import-in-the-middle:
         specifier: ^3.0.1
         version: 3.0.1
+      ioredis:
+        specifier: ^5.10.1
+        version: 5.10.1
       jose:
         specifier: ^6.2.3
         version: 6.2.3
