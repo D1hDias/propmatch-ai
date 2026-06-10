@@ -3,12 +3,11 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import {
   Globe, RefreshCw, Loader, CheckCircle, Clock, AlertTriangle, Scan,
-  ArrowDownAZ, ArrowUpDown, Pencil, EyeOff, Check, X, Eye, Play,
+  ArrowDownAZ, ArrowUpDown, Pencil, Check, X, Eye, Play, Search, Trash2,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { PartnerSiteForm } from './PartnerSiteForm';
 import { apiFetch } from '@/lib/api-fetch';
-import { cn } from '@/lib/utils';
 import {
   selectionAnalysis,
   toggleSelectionIds,
@@ -43,6 +42,7 @@ interface PartnerSite {
   name: string;
   discoveryStrategy: string;
   active: boolean;
+  dismissed?: boolean;
   lastDiscoveredAt: string | null;
   lastScrapedAt: string | null;
   propertyUrlPatterns: string[];
@@ -55,6 +55,7 @@ interface PartnerSite {
   discoveryLockedAt: string | null;
   syncStatus: string;
   listingCount: number;
+  _count?: { propertySources: number };
 }
 
 interface Props {
@@ -70,7 +71,9 @@ interface Props {
 
 function siteTier(s: PartnerSite): number {
   if (s.consecutiveFailures >= 5) return 4;
-  const hasProfile = s.propertyUrlPatterns.length > 0 || s.listingUrlPatterns.length > 0 || !!s.discoveryStrategy || s.listingCount > 0;
+  const hasProfile = s.propertyUrlPatterns.length > 0 || s.listingUrlPatterns.length > 0
+    || (!!s.discoveryStrategy && s.discoveryStrategy !== 'map_then_scrape')
+    || s.listingCount > 0;
   if (hasProfile && s.syncStatus !== 'running' && s.discoveryLockedAt === null) return 0;
   if (s.syncStatus === 'running') return 1;
   if (s.discoveryLockedAt !== null) return 2;
@@ -84,35 +87,26 @@ function applySort(list: PartnerSite[], order: 'status' | 'alpha'): PartnerSite[
   return [...list].sort((a, b) => siteTier(a) - siteTier(b));
 }
 
-// ─── hide persistence (localStorage, per-device) ─────────────────────────────
-
-const HIDDEN_KEY = 'propmatch_hidden_sites';
-
-function readHidden(): string[] {
-  if (typeof window === 'undefined') return [];
-  try { return JSON.parse(localStorage.getItem(HIDDEN_KEY) ?? '[]') as string[]; } catch { return []; }
-}
-
-function writeHidden(ids: string[]): void {
-  localStorage.setItem(HIDDEN_KEY, JSON.stringify(ids));
-}
-
 // ─── component ────────────────────────────────────────────────────────────────
 
 export function PartnerSiteList({ selectable, selectedIds = [], onSelectionChange, maxSelectable }: Props) {
   const [sites, setSites] = useState<PartnerSite[]>([]);
   const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState('');
   const [discoveringId, setDiscoveringId] = useState<string | null>(null);
   const [syncingId, setSyncingId] = useState<string | null>(null);
   const [syncProgress, setSyncProgress] = useState<Record<string, { fetched: number; added: number; total?: number }>>({});
   const [savingId, setSavingId] = useState<string | null>(null);
-  const esRef = useRef<EventSource | null>(null);
+  const [discoverError, setDiscoverError] = useState<string | null>(null);
+  const [syncError, setSyncError] = useState<string | null>(null);
+  const streamAbortRef = useRef<AbortController | null>(null);
   const [sortOrder, setSortOrder] = useState<'status' | 'alpha'>('status');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
-  const [hiddenIds, setHiddenIds] = useState<string[]>(readHidden);
-  const [showHidden, setShowHidden] = useState(false);
+  const [showDismissed, setShowDismissed] = useState(false);
   const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Sites that should auto-trigger sync once their discovery completes
+  const pendingAutoSyncRef = useRef<Set<string>>(new Set());
 
   const fetchSites = useCallback(async () => {
     try {
@@ -125,28 +119,49 @@ export function PartnerSiteList({ selectable, selectedIds = [], onSelectionChang
   }, []);
 
   // Auto-poll while any site is discovering or syncing.
+  // Also auto-triggers sync when discovery completes for newly-added sites.
   useEffect(() => {
     const hasPending = sites.some(
       (s) => s.discoveryLockedAt !== null || s.syncStatus === 'running',
     );
-    if (hasPending) {
+
+    // Check if any pending-auto-sync sites finished discovery
+    if (pendingAutoSyncRef.current.size > 0 && !syncingId) {
+      for (const pendingId of [...pendingAutoSyncRef.current]) {
+        const s = sites.find((site) => site.id === pendingId);
+        if (s && s.discoveryLockedAt === null) {
+          pendingAutoSyncRef.current.delete(pendingId);
+          const hasProfile = s.propertyUrlPatterns.length > 0 || s.listingUrlPatterns.length > 0 || !!s.discoveryStrategy || s.listingCount > 0;
+          if (hasProfile) handleSync(pendingId);
+        }
+      }
+    }
+
+    if (hasPending || pendingAutoSyncRef.current.size > 0) {
       pollRef.current = setTimeout(() => { void fetchSites(); }, 5_000);
     }
     return () => { if (pollRef.current) clearTimeout(pollRef.current); };
-  }, [sites, fetchSites]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sites, fetchSites, syncingId]);
 
   useEffect(() => { void fetchSites(); }, [fetchSites]);
 
-  // Close EventSource on unmount to avoid memory leaks
-  useEffect(() => () => { esRef.current?.close(); }, []);
+  // Abort any in-flight sync stream on unmount
+  useEffect(() => () => { streamAbortRef.current?.abort(); }, []);
 
   // ── derived ────────────────────────────────────────────────────────────────
 
+  const searchLower = search.toLowerCase();
   const visibleSites = applySort(
-    sites.filter((s) => !hiddenIds.includes(s.id)),
+    sites.filter((s) => !s.dismissed && (
+      !searchLower ||
+      s.name.toLowerCase().includes(searchLower) ||
+      s.domain.toLowerCase().includes(searchLower)
+    )),
     sortOrder,
   );
-  const hiddenCount = sites.filter((s) => hiddenIds.includes(s.id)).length;
+  const dismissedSites = sites.filter((s) => s.dismissed);
+  const dismissedCount = dismissedSites.length;
 
   // Selection analysis for summary (selectable mode only)
   const { indexedCount: indexedSelectedCount, liveCount: liveSelectedCount, noProfileCount: noProfileSelectedCount, estimatedTime } =
@@ -156,16 +171,30 @@ export function PartnerSiteList({ selectable, selectedIds = [], onSelectionChang
 
   async function handleDiscover(id: string) {
     setDiscoveringId(id);
+    setDiscoverError(null);
     try {
       const res = await apiFetch(`/api/v1/partner-sites/${id}/discover`, { method: 'POST' });
-      if (res.ok) {
-        const data = (await res.json()) as { data: PartnerSite };
-        setSites((prev) => prev.map((s) => s.id === id ? data.data : s));
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { error?: { user_message?: string } };
+        setDiscoverError(body.error?.user_message ?? `Erro ao remapear (HTTP ${res.status})`);
+        return;
       }
-    } catch { /* ignore */ }
-    finally {
+      const data = (await res.json()) as { data: PartnerSite };
+      const updated = data.data;
+      setSites((prev) => prev.map((s) => s.id === id ? updated : s));
+      const foundPatterns = updated.propertyUrlPatterns.length > 0
+        || updated.listingUrlPatterns.length > 0
+        || (!!updated.discoveryStrategy && updated.discoveryStrategy !== 'map_then_scrape');
+      if (!foundPatterns) {
+        setDiscoverError(
+          'Nenhum padrão encontrado. O site pode usar JavaScript para carregar imóveis (SPA) ' +
+          'ou estar bloqueando o mapeador. Configure seedUrls manualmente.',
+        );
+      }
+    } catch {
+      setDiscoverError('Falha de conexão ao remapear. Verifique o Firecrawl self-hosted.');
+    } finally {
       setDiscoveringId(null);
-      // Always refetch to get the latest state from DB (listingCount, discoveryStrategy, etc.)
       void fetchSites();
     }
   }
@@ -173,52 +202,137 @@ export function PartnerSiteList({ selectable, selectedIds = [], onSelectionChang
   function handleSync(id: string) {
     if (syncingId) return;
     setSyncingId(id);
+    setSyncError(null);
 
-    esRef.current?.close();
-    const es = new EventSource(`/api/v1/partner-sites/${id}/sync/stream`);
-    esRef.current = es;
+    // Capture pre-sync listing count so we can distinguish a true empty-sync
+    // (MAP found nothing) from a normal delta-sync with no new listings.
+    const preSyncCount = sites.find((s) => s.id === id)?.listingCount ?? 0;
 
-    es.onmessage = (ev) => {
+    streamAbortRef.current?.abort();
+    const ctrl = new AbortController();
+    streamAbortRef.current = ctrl;
+
+    void (async () => {
       try {
-        const data = JSON.parse(ev.data as string) as {
-          done?: boolean; error?: string;
-          phase?: string; fetched?: number; added?: number; total?: number;
-        };
-        if (data.done || data.error) {
-          es.close();
-          esRef.current = null;
+        const res = await apiFetch(`/api/v1/partner-sites/${id}/sync/stream`, {
+          signal: ctrl.signal,
+        });
+
+        if (!res.ok || !res.body) {
+          setSyncError(`Erro ao iniciar sincronização (HTTP ${res.status}).`);
           setSyncingId(null);
           setSyncProgress((prev) => { const next = { ...prev }; delete next[id]; return next; });
           void fetchSites();
-        } else {
-          setSyncProgress((prev) => ({
-            ...prev,
-            [id]: { fetched: data.fetched ?? 0, added: data.added ?? 0, total: data.total },
-          }));
+          return;
         }
-      } catch { /* malformed event — ignore */ }
-    };
 
-    es.onerror = () => {
-      es.close();
-      esRef.current = null;
-      setSyncingId(null);
-      setSyncProgress((prev) => { const next = { ...prev }; delete next[id]; return next; });
-      void fetchSites();
-    };
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+
+          // SSE events are delimited by double newlines
+          const parts = buffer.split('\n\n');
+          buffer = parts.pop() ?? '';
+
+          for (const part of parts) {
+            const line = part.split('\n').find((l) => l.startsWith('data: '));
+            if (!line) continue;
+            try {
+              const data = JSON.parse(line.slice(6)) as {
+                done?: boolean; error?: string;
+                phase?: string; fetched?: number; added?: number; total?: number;
+              };
+              if (data.error) {
+                setSyncError(`Erro na sincronização: ${data.error}`);
+                setSyncingId(null);
+                setSyncProgress((prev) => { const next = { ...prev }; delete next[id]; return next; });
+                void fetchSites();
+                return;
+              } else if (data.done) {
+                const added = (data as Record<string, unknown>).added as number ?? 0;
+                const finalTotal = (data as Record<string, unknown>).total as number | undefined;
+                // Show 100% briefly before clearing
+                setSyncProgress((prev) => ({
+                  ...prev,
+                  [id]: {
+                    fetched: finalTotal ?? prev[id]?.fetched ?? 0,
+                    added,
+                    total: finalTotal ?? prev[id]?.total,
+                  },
+                }));
+                setSyncingId(null);
+                void fetchSites();
+                setTimeout(() => {
+                  setSyncProgress((prev) => { const next = { ...prev }; delete next[id]; return next; });
+                }, 2000);
+                // Only warn when the site had no listings before AND still has none after —
+                // a delta re-sync with 0 new listings is normal, not an error.
+                if (added === 0 && preSyncCount === 0) {
+                  setSyncError(
+                    'Sincronização concluída sem adicionar imóveis. ' +
+                    'O site pode usar JavaScript (SPA) ou os padrões de URL não encontraram listagens. ' +
+                    'Execute "Remapear" primeiro ou configure seedUrls manualmente.',
+                  );
+                }
+                return;
+              } else {
+                setSyncProgress((prev) => ({
+                  ...prev,
+                  [id]: { fetched: data.fetched ?? 0, added: data.added ?? 0, total: data.total },
+                }));
+              }
+            } catch { /* malformed event — ignore */ }
+          }
+        }
+
+        // Stream ended cleanly without an explicit done event
+        setSyncingId(null);
+        setTimeout(() => {
+          setSyncProgress((prev) => { const next = { ...prev }; delete next[id]; return next; });
+        }, 2000);
+        void fetchSites();
+      } catch (err) {
+        if (ctrl.signal.aborted) return; // intentional cancel — no error to show
+        setSyncError('Falha na conexão com o servidor. Tente novamente.');
+        setSyncingId(null);
+        setSyncProgress((prev) => { const next = { ...prev }; delete next[id]; return next; });
+        void fetchSites();
+      }
+    })();
   }
 
-  function handleHide(id: string) {
-    const updated = [...new Set([...hiddenIds, id])];
-    writeHidden(updated);
-    setHiddenIds(updated);
+  async function handleDismiss(id: string) {
+    // Optimistic update
+    setSites((prev) => prev.map((s) => s.id === id ? { ...s, dismissed: true } : s));
     onSelectionChange?.(selectedIds.filter((sid) => sid !== id));
+    try {
+      await apiFetch(`/api/v1/partner-sites/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dismissed: true }),
+      });
+    } catch {
+      // Rollback on failure
+      setSites((prev) => prev.map((s) => s.id === id ? { ...s, dismissed: false } : s));
+    }
   }
 
-  function handleUnhide(id: string) {
-    const updated = hiddenIds.filter((hid) => hid !== id);
-    writeHidden(updated);
-    setHiddenIds(updated);
+  async function handleRestore(id: string) {
+    setSites((prev) => prev.map((s) => s.id === id ? { ...s, dismissed: false } : s));
+    try {
+      await apiFetch(`/api/v1/partner-sites/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dismissed: false }),
+      });
+    } catch {
+      setSites((prev) => prev.map((s) => s.id === id ? { ...s, dismissed: true } : s));
+    }
   }
 
   function startEdit(site: PartnerSite) {
@@ -260,11 +374,19 @@ export function PartnerSiteList({ selectable, selectedIds = [], onSelectionChang
 
   function toggleSelectAll() {
     if (!onSelectionChange) return;
-    onSelectionChange(toggleSelectAllIds(visibleSites.map((s) => s.id), selectedIds, maxSelectable));
+    if (selectedIds.length > 0) {
+      onSelectionChange([]);
+    } else {
+      onSelectionChange(toggleSelectAllIds(visibleSites.map((s) => s.id), selectedIds, maxSelectable));
+    }
   }
 
   function handleSiteAdded(site: PartnerSite) {
     setSites((prev) => prev.some((s) => s.id === site.id) ? prev : [...prev, site]);
+    // When a new site is added, auto-trigger sync once its discovery completes
+    pendingAutoSyncRef.current.add(site.id);
+    // Ensure the poll loop starts
+    void fetchSites();
   }
 
   // ── loading skeleton ───────────────────────────────────────────────────────
@@ -283,6 +405,31 @@ export function PartnerSiteList({ selectable, selectedIds = [], onSelectionChang
 
   return (
     <div className="space-y-3">
+
+      {/* Operation error banners */}
+      {(discoverError ?? syncError) && (
+        <div className="flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2.5 text-xs text-destructive">
+          <AlertTriangle className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
+          <span className="flex-1">{discoverError ?? syncError}</span>
+          <button onClick={() => { setDiscoverError(null); setSyncError(null); }} className="flex-shrink-0 hover:opacity-70">
+            <X className="w-3 h-3" />
+          </button>
+        </div>
+      )}
+
+      {/* Search field — selectable mode only */}
+      {selectable && (
+        <div className="relative">
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground pointer-events-none" />
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Buscar imobiliária…"
+            className="w-full pl-8 pr-3 py-1.5 text-xs rounded-lg border border-border bg-background focus:outline-none focus:ring-1 focus:ring-primary/30 focus:border-primary/60 placeholder:text-muted-foreground/60"
+          />
+        </div>
+      )}
 
       {/* Controls bar */}
       {sites.length > 1 && (
@@ -312,18 +459,11 @@ export function PartnerSiteList({ selectable, selectedIds = [], onSelectionChang
           </button>
           {selectable && (
             <div className="ml-auto flex items-center gap-2">
-              {selectedIds.length > 0 && (
-                <span className="text-xs text-primary font-medium">
-                  {selectedIds.length} selecionado{selectedIds.length !== 1 ? 's' : ''}
-                </span>
-              )}
               <button
                 onClick={toggleSelectAll}
                 className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs border border-border bg-muted/30 text-muted-foreground hover:border-primary/40 hover:text-primary hover:bg-primary/5 transition-colors"
               >
-                {visibleSites.length > 0 && visibleSites.every((s) => selectedIds.includes(s.id))
-                  ? 'Desmarcar todas'
-                  : 'Selecionar todas'}
+                {selectedIds.length > 0 ? 'Desmarcar todas' : 'Selecionar todas'}
               </button>
             </div>
           )}
@@ -331,12 +471,12 @@ export function PartnerSiteList({ selectable, selectedIds = [], onSelectionChang
       )}
 
       {/* Empty state */}
-      {visibleSites.length === 0 && hiddenCount === 0 && (
+      {visibleSites.length === 0 && dismissedCount === 0 && (
         <p className="text-xs text-muted-foreground">Nenhum site parceiro cadastrado.</p>
       )}
 
       {/* Site grid / list */}
-      <div className="space-y-2">
+      <div className={selectable ? 'space-y-2 max-h-[420px] overflow-y-auto pr-0.5' : 'space-y-2'}>
         {visibleSites.map((site) => {
           const isSelected = selectedIds.includes(site.id);
           const isDiscovering = discoveringId === site.id;
@@ -344,11 +484,16 @@ export function PartnerSiteList({ selectable, selectedIds = [], onSelectionChang
           const progress = syncProgress[site.id];
           const isSaving = savingId === site.id;
           const isEditing = editingId === site.id;
-          const hasProfile = site.propertyUrlPatterns.length > 0 || site.listingUrlPatterns.length > 0 || !!site.discoveryStrategy || site.listingCount > 0;
+          // hasProfile = site was actually discovered (not just default strategy value)
+          const hasProfile = site.propertyUrlPatterns.length > 0 || site.listingUrlPatterns.length > 0
+            || (!!site.discoveryStrategy && site.discoveryStrategy !== 'map_then_scrape')
+            || site.listingCount > 0;
           const isCircuitOpen = site.consecutiveFailures >= 5;
           const hasWarning = site.consecutiveFailures > 0 && site.consecutiveFailures < 5;
           const isMappingInBackground = site.discoveryLockedAt !== null;
           const isSyncing = site.syncStatus === 'running' || isSyncingThis;
+          const syncedCount = site._count?.propertySources ?? 0;
+          const isFullySynced = site.listingCount > 0 && site.lastScrapedAt !== null && syncedCount >= site.listingCount;
 
           return (
             <div
@@ -419,8 +564,9 @@ export function PartnerSiteList({ selectable, selectedIds = [], onSelectionChang
                   <p className="text-xs text-muted-foreground truncate">{site.domain}</p>
                 </div>
 
-                {/* Action icons — visible on hover */}
-                <div
+
+                {/* Action icons — visible on hover, hidden in selectable (briefing) mode */}
+                {!selectable && <div
                   className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
                   onClick={(e) => e.stopPropagation()}
                 >
@@ -444,25 +590,31 @@ export function PartnerSiteList({ selectable, selectedIds = [], onSelectionChang
                   </button>
                   {hasProfile && (
                     <button
-                      title={isSyncingThis ? 'Sincronizando…' : 'Sincronizar estoque agora'}
-                      disabled={isSyncingThis || !!syncingId}
+                      title={
+                        isSyncingThis ? 'Sincronizando…'
+                        : isFullySynced ? 'Todos os imóveis já estão no banco — sincronização bloqueada para evitar retrabalho'
+                        : 'Sincronizar estoque agora'
+                      }
+                      disabled={isSyncingThis || !!syncingId || isFullySynced}
                       onClick={() => handleSync(site.id)}
                       className="p-1 rounded text-muted-foreground hover:text-primary hover:bg-primary/10 transition-colors disabled:opacity-40"
                     >
                       {isSyncingThis
                         ? <Loader className="w-3 h-3 animate-spin text-primary" />
+                        : isFullySynced
+                        ? <CheckCircle className="w-3 h-3 text-success" />
                         : <Play className="w-3 h-3" />
                       }
                     </button>
                   )}
                   <button
-                    title="Ocultar da minha lista"
-                    onClick={() => handleHide(site.id)}
+                    title="Remover da minha lista"
+                    onClick={() => void handleDismiss(site.id)}
                     className="p-1 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
                   >
-                    <EyeOff className="w-3 h-3" />
+                    <Trash2 className="w-3 h-3" />
                   </button>
-                </div>
+                </div>}
               </div>
 
               {/* Row 2: status badges */}
@@ -484,15 +636,28 @@ export function PartnerSiteList({ selectable, selectedIds = [], onSelectionChang
                     Mapeando…
                   </Badge>
                 ) : hasProfile ? (
-                  <Badge
-                    className="gap-1 bg-success/10 text-success hover:bg-success/10 text-xs"
-                    title={site.listingCount > 0 ? `${site.listingCount} imóveis indexados` : 'Padrões de URL configurados'}
-                  >
-                    <CheckCircle className="w-3 h-3" />
-                    {site.listingCount > 0
-                      ? `${site.listingCount.toLocaleString('pt-BR')} imóveis`
-                      : 'Configurado'}
-                  </Badge>
+                  !selectable ? (
+                    <>
+                      <Badge
+                        className="gap-1 bg-success/10 text-success hover:bg-success/10 text-xs"
+                        title={site.listingCount > 0 ? `${site.listingCount} imóveis indexados` : 'Padrões de URL configurados'}
+                      >
+                        <CheckCircle className="w-3 h-3" />
+                        {site.listingCount > 0
+                          ? `${site.listingCount.toLocaleString('pt-BR')} imóveis`
+                          : 'Configurado'}
+                      </Badge>
+                      {isFullySynced && (
+                        <Badge
+                          className="gap-1 bg-success/20 text-success border border-success/30 hover:bg-success/20 text-xs"
+                          title={`${syncedCount.toLocaleString('pt-BR')} imóveis raspados — nenhum pendente`}
+                        >
+                          <CheckCircle className="w-3 h-3" />
+                          Completo
+                        </Badge>
+                      )}
+                    </>
+                  ) : null
                 ) : (
                   <Badge
                     className="gap-1 bg-warning/10 text-warning hover:bg-warning/10 text-xs"
@@ -503,11 +668,11 @@ export function PartnerSiteList({ selectable, selectedIds = [], onSelectionChang
                   </Badge>
                 )}
 
-                {isSyncing && !isMappingInBackground && (
+                {(isSyncing || !!progress) && !isMappingInBackground && (
                   <Badge className="gap-1 bg-primary/10 text-primary hover:bg-primary/10 text-xs">
                     <Loader className="w-3 h-3 animate-spin" />
-                    {isSyncingThis && progress
-                      ? `${progress.added.toLocaleString('pt-BR')} adicionados${progress.total ? ` / ${progress.total.toLocaleString('pt-BR')}` : ''}…`
+                    {progress
+                      ? `${progress.fetched.toLocaleString('pt-BR')} / ${progress.total?.toLocaleString('pt-BR') ?? '…'}`
                       : 'Sincronizando…'
                     }
                   </Badge>
@@ -523,92 +688,47 @@ export function PartnerSiteList({ selectable, selectedIds = [], onSelectionChang
                   </Badge>
                 )}
 
-                {/* Speed indicator — only in selectable mode */}
-                {selectable && !isCircuitOpen && (
-                  <span
-                    className={cn(
-                      'ml-auto text-[10px] font-medium px-1.5 py-0.5 rounded',
-                      site.listingCount > 0
-                        ? 'bg-success/10 text-success'
-                        : hasProfile
-                          ? 'bg-warning/10 text-warning'
-                          : 'bg-muted text-muted-foreground',
-                    )}
-                    title={
-                      site.listingCount > 0
-                        ? 'Estoque indexado — busca rápida'
-                        : hasProfile
-                          ? 'Busca ao vivo via scraping — mais lento'
-                          : 'Sem sync — site será ignorado na busca'
-                    }
-                  >
-                    {site.listingCount > 0 ? '⚡ Indexado' : hasProfile ? '⏱ Ao vivo' : '— Sem sync'}
-                  </span>
-                )}
 
               </div>
             </div>
           );
         })}
 
-        {/* Hidden sites (collapsed) */}
-        {showHidden && sites
-          .filter((s) => hiddenIds.includes(s.id))
-          .map((site) => (
-            <div
-              key={site.id}
-              className="flex items-center gap-2 rounded-lg border border-dashed border-border/50 bg-muted/10 p-3 opacity-50"
-            >
-              <Globe className="w-4 h-4 text-muted-foreground flex-shrink-0" />
-              <div className="flex-1 min-w-0">
-                <p className="text-sm text-muted-foreground truncate">{site.name}</p>
-                <p className="text-xs text-muted-foreground/60 truncate">{site.domain}</p>
-              </div>
-              <button
-                title="Mostrar novamente"
-                onClick={() => handleUnhide(site.id)}
-                className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-muted transition-colors flex-shrink-0"
-              >
-                <Eye className="w-3.5 h-3.5" />
-              </button>
+        {/* Dismissed sites (collapsed) */}
+        {showDismissed && dismissedSites.map((site) => (
+          <div
+            key={site.id}
+            className="flex items-center gap-2 rounded-lg border border-dashed border-border/50 bg-muted/10 p-3 opacity-50"
+          >
+            <Globe className="w-4 h-4 text-muted-foreground flex-shrink-0" />
+            <div className="flex-1 min-w-0">
+              <p className="text-sm text-muted-foreground truncate">{site.name}</p>
+              <p className="text-xs text-muted-foreground/60 truncate">{site.domain}</p>
             </div>
-          ))
-        }
+            <button
+              title="Restaurar na minha lista"
+              onClick={() => void handleRestore(site.id)}
+              className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-muted transition-colors flex-shrink-0"
+            >
+              <Eye className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        ))}
       </div>
 
-      {/* Hidden sites toggle */}
-      {hiddenCount > 0 && (
+      {/* Dismissed sites toggle */}
+      {dismissedCount > 0 && (
         <button
           className="text-xs text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1"
-          onClick={() => setShowHidden((v) => !v)}
+          onClick={() => setShowDismissed((v) => !v)}
         >
-          {showHidden ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
-          {showHidden
-            ? 'Ocultar sites escondidos'
-            : `${hiddenCount} site${hiddenCount !== 1 ? 's' : ''} oculto${hiddenCount !== 1 ? 's' : ''}`}
+          {showDismissed ? <X className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+          {showDismissed
+            ? 'Ocultar removidos'
+            : `${dismissedCount} site${dismissedCount !== 1 ? 's' : ''} removido${dismissedCount !== 1 ? 's' : ''} da lista`}
         </button>
       )}
 
-      {/* Selection summary (selectable mode only) */}
-      {selectable && selectedIds.length > 0 && (
-        <div className="rounded-lg border border-border bg-muted/20 px-3 py-2 space-y-1">
-          <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
-            {indexedSelectedCount > 0 && (
-              <span className="text-success font-medium">⚡ {indexedSelectedCount} indexado{indexedSelectedCount !== 1 ? 's' : ''}</span>
-            )}
-            {liveSelectedCount > 0 && (
-              <span className="text-warning font-medium">⏱ {liveSelectedCount} ao vivo</span>
-            )}
-            {noProfileSelectedCount > 0 && (
-              <span className="text-destructive font-medium">⚠ {noProfileSelectedCount} sem sync</span>
-            )}
-            <span className="ml-auto">Estimado: {estimatedTime}</span>
-          </div>
-          {noProfileSelectedCount > 0 && (
-            <p className="text-[10px] text-muted-foreground">Sites sem sync serão ignorados na busca.</p>
-          )}
-        </div>
-      )}
 
       {/* Warnings */}
       {selectable && maxSelectable !== undefined && selectedIds.length >= maxSelectable && (

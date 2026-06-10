@@ -10,6 +10,14 @@ export async function register() {
       // Non-fatal: URL builder falls back to 'sp' for unknown cities
     });
 
+    // Reset syncs left in 'running' state from a previous server instance.
+    // Any running sync is orphaned after a restart — BullMQ workers don't survive.
+    const { prisma } = await import('@/server/db/client');
+    await prisma.partnerSite.updateMany({
+      where: { syncStatus: 'running' },
+      data: { syncStatus: 'idle' },
+    }).catch(() => {});
+
     // Start BullMQ workers — runs once per Node.js process lifetime
     const { startSearchWorker } = await import('@/server/search/queue');
     const { startHitlWorker } = await import('@/server/briefings/hitl-queue');

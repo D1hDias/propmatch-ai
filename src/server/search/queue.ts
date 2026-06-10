@@ -220,12 +220,11 @@ function hardFilter(listings: NormalizedListing[], criteria: SearchCriteria): No
       // 2b. Same-category subtype mismatch (e.g. apartment requested, house found):
       //     Allowed only when ALL of these hold:
       //       - neighborhood is in criteria (or unknown)
-      //       - price ≤ priceMin × 1.20 (tight — within 20% of stated floor)
-      //       - price ≤ priceMax (if set)
+      //       - price within exact range (priceMin–priceMax)
       //       - bedrooms within range
       if (normStr(l.propertyType) !== normStr(criteria.propertyType)) {
         if (!neighborhoodOk(l, criteria)) return false;
-        if (criteria.priceMin != null && l.price > 0 && l.price > criteria.priceMin * 1.20) return false;
+        if (criteria.priceMin != null && l.price > 0 && l.price < criteria.priceMin) return false;
         if (criteria.priceMax != null && l.price > 0 && l.price > criteria.priceMax) return false;
         if (criteria.bedroomsMin != null && l.bedrooms != null && l.bedrooms < criteria.bedroomsMin) return false;
       }
@@ -236,14 +235,13 @@ function hardFilter(listings: NormalizedListing[], criteria: SearchCriteria): No
     // 4. Bedrooms above maximum → hard discard (known value only)
     if (criteria.bedroomsMax != null && l.bedrooms != null && l.bedrooms > criteria.bedroomsMax) return false;
 
-    // 5. Area below minimum → hard discard (known value only)
+    // 5. Area outside exact range → hard discard (known value only)
     if (criteria.areaMin != null && l.areaSqm != null && l.areaSqm < criteria.areaMin) return false;
+    if (criteria.areaMax != null && l.areaSqm != null && l.areaSqm > criteria.areaMax) return false;
 
-    // 6. Price below minimum → hard discard (known value only)
+    // 6. Price outside exact range → hard discard (known value only)
     if (criteria.priceMin != null && l.price > 0 && l.price < criteria.priceMin) return false;
-
-    // 7. Price more than 20% above maximum → hard discard (tightened from 30%)
-    if (criteria.priceMax != null && l.price > 0 && l.price > criteria.priceMax * 1.2) return false;
+    if (criteria.priceMax != null && l.price > 0 && l.price > criteria.priceMax) return false;
 
     // 8. Neighborhood: discard listings from a known different neighborhood.
     //    Listings with no neighborhood data pass (benefit of the doubt).

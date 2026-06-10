@@ -172,14 +172,20 @@ function hardFilter<T extends RawListingForFilter>(
       if (l.bedrooms > criteria.bedroomsMax) return false;
     }
 
-    // Area hard constraint — only when explicitly specified
+    // Area exact range constraints
     if (criteria.areaMin != null && l.areaSqm != null) {
       if (l.areaSqm < criteria.areaMin) return false;
     }
+    if (criteria.areaMax != null && l.areaSqm != null) {
+      if (l.areaSqm > criteria.areaMax) return false;
+    }
 
-    // Price: only filter when explicitly specified; allow 30% tolerance for data noise
+    // Price exact range constraints
+    if (criteria.priceMin != null && l.price > 0) {
+      if (l.price < criteria.priceMin) return false;
+    }
     if (criteria.priceMax != null && l.price > 0) {
-      if (l.price > criteria.priceMax * 1.3) return false;
+      if (l.price > criteria.priceMax) return false;
     }
     return true;
   });

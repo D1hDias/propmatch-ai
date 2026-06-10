@@ -192,7 +192,10 @@ export function BriefingForm() {
 
   // Global
   const [clientId, setClientId] = useState<string | null>(() => searchParams.get('clientId'));
-  const [selectedPartnerIds, setSelectedPartnerIds] = useState<string[]>([]);
+  const [selectedPartnerIds, setSelectedPartnerIds] = useState<string[]>(() => {
+    const ids = searchParams.get('partnerIds');
+    return ids ? ids.split(',').filter(Boolean) : [];
+  });
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
 
@@ -239,7 +242,16 @@ export function BriefingForm() {
   const [additionalContext, setAdditionalContext] = useState('');
   const contextRef = useRef<HTMLTextAreaElement>(null);
 
-  const isValid = selectedPartnerIds.length > 0;
+  const hasAnyCriteria =
+    neighborhoods.length > 0 ||
+    priceMin !== null ||
+    priceMax !== null ||
+    bedroomsMin !== null ||
+    parkingMin !== null ||
+    areaMin !== null ||
+    areaMax !== null;
+
+  const isValid = selectedPartnerIds.length > 0 && hasAnyCriteria;
 
   function togglePropertyType(value: string) {
     setPropertyTypes((prev) =>
@@ -449,7 +461,7 @@ export function BriefingForm() {
 
           {/* Quartos */}
           <NumberSelector
-            label="Quartos mínimo"
+            label="Quartos"
             options={BEDROOM_OPTIONS}
             value={bedroomsMin}
             onChange={setBedroomsMin}
@@ -458,7 +470,7 @@ export function BriefingForm() {
 
           {/* Vagas */}
           <NumberSelector
-            label="Vagas mínimo"
+            label="Vagas"
             options={PARKING_OPTIONS}
             value={parkingMin}
             onChange={setParkingMin}
@@ -562,7 +574,7 @@ export function BriefingForm() {
         </div>
 
         {/* ── Right column: source selection (sticky) ── */}
-        <div className="lg:sticky lg:top-6">
+        <div className="lg:sticky lg:top-[calc(var(--header-height)+2rem)] lg:self-start">
           <div className="rounded-xl border border-border bg-muted/10 p-5">
             <SourceSelector
               selectedPartnerIds={selectedPartnerIds}

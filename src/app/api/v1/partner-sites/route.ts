@@ -13,11 +13,11 @@ const createSchema = z.object({
   name: z.string().min(1).max(100),
 });
 
-// GET /api/v1/partner-sites — list active partner sites for the authenticated user
+// GET /api/v1/partner-sites — list active partner sites, annotated with per-user dismissed flag
 export async function GET(req: NextRequest) {
   try {
-    await requireAuth(req);
-    const sites = await listPartnerSites();
+    const ctx = await requireAuth(req);
+    const sites = await listPartnerSites(ctx.sub);
     return apiSuccess({ data: sites });
   } catch (err) {
     return apiError(err);
@@ -33,6 +33,14 @@ export async function POST(req: NextRequest) {
       throw new AppError('VALIDATION_FAILED', parsed.error.message, 'Dados inválidos.', 400);
     }
     const { site, created } = await createPartnerSite(ctx.sub, parsed.data);
+
+    // Immediately enqueue discovery + sync for brand-new sites so brokers don't
+    // wait up to 24h for the first inventory to appear (bypasses the nightly window).
+    if (created) {
+      const { enqueueSiteSync } = await import('@/server/partners/sync-queue');
+      void enqueueSiteSync(site.id);
+    }
+
     return apiSuccess({ data: site, created }, created ? 201 : 200);
   } catch (err) {
     return apiError(err);

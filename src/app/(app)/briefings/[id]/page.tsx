@@ -20,6 +20,7 @@ interface BriefingDetail {
   reviewStatus: string;
   extractionConfidence: number | null;
   extractedCriteria: ExtractedCriteria | null;
+  selectedPortals: string[];
   createdAt: string;
   hitlMetrics: { queuedAt: string }[];
   client?: { id: string; name: string; isGuest: boolean; createdAt: string; softArchivedAt: string | null };
@@ -30,20 +31,52 @@ interface Props {
 }
 
 function buildEditUrl(briefing: BriefingDetail): string {
-  const c = briefing.extractedCriteria;
+  // extractedCriteria pode ter dois formatos:
+  // 1. ExtractedCriteria (via LLM): { intent, hard_filters: { property_type, price_min, … }, location: { neighborhoods } }
+  // 2. SearchCriteria (via formulário direto): { purpose, propertyType, neighborhoods, priceMin, … }
+  const c = briefing.extractedCriteria as Record<string, unknown> | null;
+  if (!c) return '/briefings/new';
+
   const p = new URLSearchParams();
-  // intent: "buy" → purpose: "sale", "rent" → "rent"
-  if (c?.intent) p.set('purpose', c.intent === 'rent' ? 'rent' : 'sale');
-  if (c?.hard_filters?.property_type) p.set('propertyType', c.hard_filters.property_type);
-  const hoods = c?.location?.neighborhoods ?? [];
+  const hf = c.hard_filters as Record<string, unknown> | undefined;
+  const loc = c.location as Record<string, unknown> | undefined;
+
+  // purpose / intent
+  const purposeVal = (c.intent as string | undefined) ?? (c.purpose as string | undefined);
+  if (purposeVal) p.set('purpose', purposeVal === 'rent' ? 'rent' : 'sale');
+
+  // property type
+  const propertyType = (hf?.property_type as string | undefined) ?? (c.propertyType as string | undefined);
+  if (propertyType) p.set('propertyType', propertyType);
+
+  // neighborhoods
+  const hoods = ((loc?.neighborhoods ?? c.neighborhoods) as string[] | undefined) ?? [];
   if (hoods.length) p.set('neighborhoods', hoods.join(','));
-  if (c?.hard_filters?.price_min != null) p.set('priceMin', String(c.hard_filters.price_min));
-  if (c?.hard_filters?.price_max != null) p.set('priceMax', String(c.hard_filters.price_max));
-  if (c?.hard_filters?.bedrooms_min != null) p.set('bedroomsMin', String(c.hard_filters.bedrooms_min));
-  if (c?.hard_filters?.parking_min != null) p.set('parkingMin', String(c.hard_filters.parking_min));
-  if (c?.hard_filters?.area_min_m2 != null) p.set('areaMin', String(c.hard_filters.area_min_m2));
-  if (c?.hard_filters?.area_max_m2 != null) p.set('areaMax', String(c.hard_filters.area_max_m2));
+
+  // prices
+  const priceMin = (hf?.price_min as number | undefined) ?? (c.priceMin as number | undefined);
+  if (priceMin != null) p.set('priceMin', String(priceMin));
+
+  const priceMax = (hf?.price_max as number | undefined) ?? (c.priceMax as number | undefined);
+  if (priceMax != null) p.set('priceMax', String(priceMax));
+
+  // bedrooms
+  const bedroomsMin = (hf?.bedrooms_min as number | undefined) ?? (c.bedroomsMin as number | undefined);
+  if (bedroomsMin != null) p.set('bedroomsMin', String(bedroomsMin));
+
+  // parking
+  const parkingMin = (hf?.parking_min as number | undefined) ?? (c.parkingMin as number | undefined);
+  if (parkingMin != null) p.set('parkingMin', String(parkingMin));
+
+  // area
+  const areaMin = (hf?.area_min_m2 as number | undefined) ?? (c.areaMin as number | undefined);
+  if (areaMin != null) p.set('areaMin', String(areaMin));
+
+  const areaMax = (hf?.area_max_m2 as number | undefined) ?? (c.areaMax as number | undefined);
+  if (areaMax != null) p.set('areaMax', String(areaMax));
+
   if (briefing.client?.id && !briefing.client.isGuest) p.set('clientId', briefing.client.id);
+  if (briefing.selectedPortals?.length) p.set('partnerIds', briefing.selectedPortals.join(','));
   return `/briefings/new?${p.toString()}`;
 }
 

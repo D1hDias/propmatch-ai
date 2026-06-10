@@ -42,6 +42,7 @@ const navSections: NavSection[] = [
       { label: 'Nova Busca', href: '/busca', icon: Search },
       { label: 'Histórico', href: '/historico', icon: History },
       { label: 'Mensagens WhatsApp', href: '/mensagens', icon: MessageCircle },
+      { label: 'Imobiliárias', href: '/imobi', icon: Building2 },
     ],
   },
   {

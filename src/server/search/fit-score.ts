@@ -156,33 +156,30 @@ export function fitScore(listing: NormalizedListing, criteria: SearchCriteria): 
   }
 
   // 4. Price — active ONLY when priceMax or priceMin was explicitly provided.
-  //    Hard fail (score = 0, listing excluded) when price > priceMax * 1.2.
-  //    The 20% tolerance is the agreed ceiling — anything beyond is simply out of budget.
+  //    Exact range: anything above priceMax or below priceMin is a hard fail.
   if ((criteria.priceMax != null || criteria.priceMin != null) && listing.price > 0) {
-    if (criteria.priceMax != null && listing.price > criteria.priceMax * 1.2) {
-      // Hard exclude — return immediately with score 0 so callers can filter it out.
+    if (criteria.priceMax != null && listing.price > criteria.priceMax) {
+      return { listing, score: 0, scoreBreakdown: { priceHardFail: 0 } };
+    }
+    if (criteria.priceMin != null && listing.price < criteria.priceMin) {
       return { listing, score: 0, scoreBreakdown: { priceHardFail: 0 } };
     }
     possible += W.price;
-    if (criteria.priceMax != null && listing.price > criteria.priceMax) {
-      // Within tolerance (0–20% over): linear penalty
-      const overBy = (listing.price - criteria.priceMax) / criteria.priceMax;
-      breakdown.price = Math.round(W.price * (1 - overBy / 0.2));
-    } else if (criteria.priceMin != null && listing.price < criteria.priceMin) {
-      breakdown.price = Math.round(W.price * 0.7); // under min — likely different product tier
-    } else {
-      breakdown.price = W.price;
-    }
+    breakdown.price = W.price;
     earned += breakdown.price;
   }
 
-  // 5. Area — active when areaMin specified
-  if (criteria.areaMin != null && listing.areaSqm != null) {
+  // 5. Area — active when areaMin or areaMax specified.
+  //    Exact range: anything below areaMin or above areaMax is a hard fail.
+  if ((criteria.areaMin != null || criteria.areaMax != null) && listing.areaSqm != null) {
+    if (criteria.areaMin != null && listing.areaSqm < criteria.areaMin) {
+      return { listing, score: 0, scoreBreakdown: { areaHardFail: 0 } };
+    }
+    if (criteria.areaMax != null && listing.areaSqm > criteria.areaMax) {
+      return { listing, score: 0, scoreBreakdown: { areaHardFail: 0 } };
+    }
     possible += W.area;
-    breakdown.area =
-      listing.areaSqm >= criteria.areaMin
-        ? W.area
-        : Math.round(W.area * (listing.areaSqm / criteria.areaMin));
+    breakdown.area = W.area;
     earned += breakdown.area;
   }
 

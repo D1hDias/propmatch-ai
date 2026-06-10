@@ -123,6 +123,14 @@ model User {
 
   ownedAgency    Agency?   @relation("AgencyOwner")
 
+  // Partner sites this user has removed from their personal list.
+  // Sites remain in the global DB for other brokers to use.
+  dismissedPartnerSiteIds  String[]  @default([]) @map("dismissed_partner_site_ids")
+
+  // Partner sites the user has explicitly added to their list (opt-in model).
+  // Admin-pre-registered sites are not visible until the user subscribes here.
+  subscribedPartnerSiteIds String[]  @default([]) @map("subscribed_partner_site_ids")
+
   lgpdJobs       LgpdJob[]
   auditEvents    AuditLog[]
   refreshTokens  RefreshToken[]
@@ -509,6 +517,10 @@ model PartnerSite {
   // Periodic sync control (DATA-8)
   syncIntervalDays    Int       @default(7) @map("sync_interval_days")
   listingCount        Int       @default(0) @map("listing_count")
+  // Cache of all canonical URLs seen in the last sync (any strategy).
+  // Merged into knownUrlSet during delta computation so URLs that were
+  // discovered but failed extraction are not re-scraped on every run.
+  knownUrls           String[]  @default([]) @map("known_urls")
   // idle | running | done | error
   syncStatus          String    @default("idle") @map("sync_status")
   // Cumulative search count — used to auto-adjust syncIntervalDays (more demand = shorter TTL)

@@ -13,6 +13,7 @@ const PROTECTED_PREFIXES = [
   '/historico',
   '/mensagens',
   '/settings',
+  '/admin',
 ];
 
 // Prefixes that should redirect already-authenticated users to the dashboard

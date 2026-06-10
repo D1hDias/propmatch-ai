@@ -45,11 +45,8 @@ function scoreBairro(l: NormalizedListing, c: SearchCriteria): number {
 
 // Preço — 25 pts, deslizante
 //
-// Lógica de range:
-//   priceMin + priceMax definidos → range explícito; dentro do intervalo = 25.
-//     (Usuário aceitou conscientemente qualquer valor entre os dois limites.)
-//   Só priceMin → penalidade íngreme acima do piso; >20% já é caro, >100% irrelevante.
-//   Só priceMax → escala 15-25 abaixo do teto; acima cai rápido.
+// hardFilter já exclui qualquer imóvel fora do range exato (priceMin–priceMax).
+// Aqui só chegam imóveis dentro do intervalo → score pleno ou leve gradação abaixo do piso.
 function scorePreco(l: NormalizedListing, c: SearchCriteria): number {
   const { priceMin, priceMax } = c;
   const price = l.price;
@@ -57,26 +54,16 @@ function scorePreco(l: NormalizedListing, c: SearchCriteria): number {
   if (price <= 0) return 15;
   if (!priceMin && !priceMax) return 20;
 
-  // Range explícito (min + max) — tudo dentro do intervalo é ideal
+  // Range explícito — qualquer valor dentro do intervalo é perfeito
   if (priceMin && priceMax) {
-    if (price <= priceMin) return 22;           // abaixo do piso (possível relisting desatualizado)
-    if (price <= priceMax) return 25;           // dentro do range = perfeito
-    // Acima do teto (hardFilter limita a 1.2×)
-    const over = (price - priceMax) / priceMax;
-    if (over <= 0.10) return 8;
-    return 3;
+    if (price <= priceMax) return 25;
+    return 0; // não deve chegar aqui após hardFilter
   }
 
-  // Só priceMin — penalidade íngreme acima do piso
+  // Só priceMin
   if (priceMin) {
-    if (price <= priceMin) return 25;
-    const ratio = price / priceMin;
-    if (ratio <= 1.10) return 22;
-    if (ratio <= 1.20) return 16;
-    if (ratio <= 1.35) return 10;
-    if (ratio <= 1.50) return 6;
-    if (ratio <= 2.00) return 4;
-    return 2;
+    if (price >= priceMin) return 25;
+    return 0; // não deve chegar aqui após hardFilter
   }
 
   // Só priceMax
@@ -85,10 +72,7 @@ function scorePreco(l: NormalizedListing, c: SearchCriteria): number {
     if (ratio <= 0.7) return 25;
     return Math.round(25 - ((ratio - 0.7) / 0.3) * 10);
   }
-  // Acima do teto (hardFilter limita a 1.2×)
-  const over = (price - priceMax!) / priceMax!;
-  if (over <= 0.10) return 5;
-  return 2;
+  return 0; // não deve chegar aqui após hardFilter
 }
 
 // Quartos — 15 pts, deslizante
@@ -105,32 +89,26 @@ function scoreQuartos(l: NormalizedListing, c: SearchCriteria): number {
 
 // Área — 10 pts, deslizante
 //
-// areaMin + areaMax definidos → range explícito; dentro do intervalo = 10.
-// Só areaMin → piso ideal; até +10% = perfeito, acima vai reduzindo.
+// hardFilter já exclui imóveis fora do range exato (areaMin–areaMax).
+// Aqui só chegam imóveis dentro do intervalo → score pleno.
 function scoreArea(l: NormalizedListing, c: SearchCriteria): number {
   const { areaMin, areaMax } = c;
   const area = l.areaSqm;
   if (area == null) return 5;
 
-  // Range explícito (min + max) — dentro do intervalo é ideal
+  // Range explícito — dentro do intervalo é perfeito
   if (areaMin && areaMax) {
-    if (area < areaMin) return 0;   // hardFilter deveria ter eliminado
-    if (area <= areaMax) return 10; // dentro do range = perfeito
-    const ratio = area / areaMax;
-    if (ratio <= 1.2) return 7;
-    if (ratio <= 1.5) return 5;
-    return 3;
+    if (area < areaMin || area > areaMax) return 0; // não deve chegar aqui após hardFilter
+    return 10;
   }
 
   // Só areaMin
-  if (!areaMin) return 8;
-  if (area < areaMin) return 0;
-  const ratio = area / areaMin;
-  if (ratio <= 1.1) return 10;
-  if (ratio <= 1.3) return 9;
-  if (ratio <= 1.6) return 7;
-  if (ratio <= 2.0) return 5;
-  return 3;
+  if (areaMin) {
+    if (area < areaMin) return 0; // não deve chegar aqui após hardFilter
+    return 10;
+  }
+
+  return 8;
 }
 
 function buildReason(

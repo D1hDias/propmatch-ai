@@ -4,6 +4,7 @@ import { prisma } from '@/server/db/client';
 import { logger } from '@/server/lib/logger';
 import { callLLM } from '@/server/lib/llm';
 import { MODELS, MODEL_FALLBACKS } from '@/server/lib/models';
+import { autoDetectStrategy } from '@/server/partners/discovery';
 import type { PartnerSite } from '@prisma/client';
 import type { NormalizedListing, SearchCriteria } from '@/server/search/types';
 
@@ -311,11 +312,265 @@ export interface SyncProgressEvent {
   total?: number;
 }
 
+// ---------------------------------------------------------------------------
+// map_markers strategy — reads ALL listing data from JS map widget variables.
+//
+// Many WP-based real estate sites pre-load the full listing index into a JS
+// variable for the map widget, e.g.:
+//   var markers = [{"lat":-23.0,"lng":-43.4,"title":"...","url":"...","bairro":"...","valor":720000},...]
+//
+// We fetch each seedUrl with plain HTTP (no Firecrawl) and parse the JSON.
+// Typical sync time: ~3 HTTP requests vs 40 min of per-page scraping.
+// ---------------------------------------------------------------------------
+
+interface MapMarker {
+  lat: number;
+  lng: number;
+  url?: string;
+  link?: string;
+  href?: string;
+  permalink?: string;
+  title?: string;
+  titulo?: string;
+  name?: string;
+  nome?: string;
+  valor?: number;
+  valor_venda?: number;
+  preco?: number;
+  price?: number;
+  value?: number;
+  bairro?: string;
+  neighborhood?: string;
+  regiao?: string;
+  valor_formatado?: string;
+}
+
+function extractMapMarkers(html: string): MapMarker[] {
+  const results: MapMarker[] = [];
+  // Match JSON objects that contain both lat and lng fields (map pin format).
+  for (const pattern of [
+    /\{[^{}]*"lat"\s*:\s*-?\d+(?:\.\d+)?[^{}]*"lng"\s*:\s*-?\d+(?:\.\d+)?[^{}]*\}/g,
+    /\{[^{}]*"lng"\s*:\s*-?\d+(?:\.\d+)?[^{}]*"lat"\s*:\s*-?\d+(?:\.\d+)?[^{}]*\}/g,
+  ]) {
+    for (const match of html.matchAll(pattern)) {
+      try {
+        const obj = JSON.parse(match[0]) as MapMarker;
+        if (typeof obj.lat === 'number' && typeof obj.lng === 'number') results.push(obj);
+      } catch { /* skip malformed JSON */ }
+    }
+  }
+  // Deduplicate — the two patterns may match the same object.
+  const seen = new Map<string, MapMarker>();
+  for (const m of results) {
+    const key = m.url ?? m.link ?? m.href ?? m.permalink ?? `${m.lat},${m.lng}`;
+    if (!seen.has(key)) seen.set(key, m);
+  }
+  return [...seen.values()];
+}
+
+function extractBedroomsAndArea(title: string): { bedrooms: number | null; areaSqm: number | null } {
+  const t = title.toLowerCase();
+  const areaMatch = t.match(/(\d+(?:[,\.]\d+)?)\s*m[²2]/);
+  const areaSqm = areaMatch ? parseFloat(areaMatch[1]!.replace(',', '.')) : null;
+  let bedrooms: number | null = null;
+  if (/\bstudio\b|\bkitnet\b|\bkit\b/.test(t)) {
+    bedrooms = 0;
+  } else {
+    const m = t.match(/(\d+)\s*(?:quarto|dormitório|dormitorio|suíte|suite)\w*/);
+    if (m) bedrooms = parseInt(m[1]!, 10);
+  }
+  return { bedrooms, areaSqm };
+}
+
+const SEED_URL_RENT_RE = /\/alugu[ae]|\/alugar\/|\/para-alugar\/|\/locac/i;
+
+function inferPriceTypeFromSeedUrl(pageUrl: string): 'sale' | 'rent' {
+  return SEED_URL_RENT_RE.test(pageUrl) ? 'rent' : 'sale';
+}
+
+async function syncSiteViaMapMarkers(
+  site: PartnerSite,
+  onProgress?: (e: SyncProgressEvent) => void,
+): Promise<SyncResult> {
+  const start = Date.now();
+  const pages = site.seedUrls.length > 0
+    ? site.seedUrls
+    : [`${site.baseUrl}/imoveis/a-venda/`, `${site.baseUrl}/imoveis/aluguel/`];
+
+  // Step 1: Fetch each seed page with plain HTTP and parse all map markers.
+  const byUrl = new Map<string, { marker: MapMarker; priceType: 'sale' | 'rent' }>();
+  for (const pageUrl of pages) {
+    try {
+      const resp = await fetch(pageUrl, {
+        signal: AbortSignal.timeout(20_000),
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; PropMatchBot/1.0)' },
+      });
+      if (!resp.ok) {
+        logger.warn('map_markers_page_http_error', { domain: site.domain, pageUrl, status: resp.status });
+        continue;
+      }
+      const html = await resp.text();
+      const markers = extractMapMarkers(html);
+      const priceType = inferPriceTypeFromSeedUrl(pageUrl);
+      for (const m of markers) {
+        const rawUrl = m.url ?? m.link ?? m.href ?? m.permalink ?? '';
+        if (!rawUrl) continue;
+        const absUrl = rawUrl.startsWith('/') ? new URL(rawUrl, site.baseUrl).href : rawUrl;
+        const canonical = canonicalListingUrl(absUrl);
+        if (!byUrl.has(canonical)) byUrl.set(canonical, { marker: m, priceType });
+      }
+      logger.info('map_markers_page_done', { domain: site.domain, pageUrl, count: markers.length });
+    } catch (err) {
+      logger.warn('map_markers_page_failed', { domain: site.domain, pageUrl, error: String(err) });
+    }
+    if (onProgress) onProgress({ phase: 'discover', fetched: byUrl.size, added: 0 });
+  }
+
+  const allCanonicalUrls = [...byUrl.keys()];
+
+  if (allCanonicalUrls.length === 0) {
+    logger.warn('map_markers_no_listings', { domain: site.domain });
+    await prisma.partnerSite.update({
+      where: { id: site.id },
+      data: { syncStatus: 'done', lastScrapedAt: new Date() },
+    });
+    return { added: 0, removed: 0, errors: 0, durationMs: Date.now() - start };
+  }
+
+  // Step 2: Compute delta — what's genuinely new, what has been removed.
+  const knownSources = await prisma.propertySource_.findMany({
+    where: { partnerSiteId: site.id },
+    select: { url: true, propertyId: true },
+  });
+  const knownUrlSet = new Set([...knownSources.map((s) => s.url), ...site.knownUrls]);
+  const currentUrlSet = new Set(allCanonicalUrls);
+  const newUrls = allCanonicalUrls.filter((u) => !knownUrlSet.has(u));
+  const removedUrls = [...knownUrlSet].filter((u) => !currentUrlSet.has(u));
+
+  logger.info('map_markers_delta', {
+    domain: site.domain,
+    total: allCanonicalUrls.length,
+    new: newUrls.length,
+    removed: removedUrls.length,
+  });
+
+  let added = 0;
+  let removed = 0;
+  let errors = 0;
+
+  // Step 3: Deactivate removed listings.
+  if (removedUrls.length > 0) {
+    const removedSources = knownSources.filter((s) => removedUrls.includes(s.url));
+    const propertyIds = [...new Set(removedSources.map((s) => s.propertyId))];
+    if (propertyIds.length > 0) {
+      await prisma.property.updateMany({
+        where: { id: { in: propertyIds } },
+        data: { active: false },
+      });
+      removed = propertyIds.length;
+    }
+  }
+
+  // Step 4: Upsert new listings from marker data (no Firecrawl needed — all data is in the JS widget).
+  for (const url of newUrls) {
+    const { marker, priceType } = byUrl.get(url)!;
+    const price = marker.valor ?? marker.valor_venda ?? marker.preco ?? marker.price ?? marker.value ?? 0;
+    const title = marker.title ?? marker.titulo ?? marker.name ?? marker.nome ?? '';
+    if (!price && !title) { errors++; continue; }
+
+    const { bedrooms, areaSqm } = extractBedroomsAndArea(title);
+    const neighborhood = marker.bairro ?? marker.neighborhood ?? marker.regiao ?? '';
+
+    try {
+      await upsertListing(
+        { title, price, bedrooms, area_sqm: areaSqm, neighborhood },
+        url,
+        site,
+        priceType,
+      );
+      added++;
+    } catch (err) {
+      logger.warn('map_markers_upsert_error', { domain: site.domain, url, error: String(err) });
+      errors++;
+    }
+
+    if (onProgress && (added + errors) % 50 === 0) {
+      onProgress({ phase: 'upsert', fetched: allCanonicalUrls.length, added, total: newUrls.length });
+    }
+  }
+
+  // Step 5: Persist stats + knownUrls cache so next sync is truly incremental.
+  await prisma.partnerSite.update({
+    where: { id: site.id },
+    data: {
+      syncStatus: 'done',
+      lastScrapedAt: new Date(),
+      lastSuccessAt: new Date(),
+      consecutiveFailures: 0,
+      listingCount: allCanonicalUrls.length,
+      knownUrls: allCanonicalUrls,
+    },
+  });
+
+  const durationMs = Date.now() - start;
+  logger.info('map_markers_sync_complete', { domain: site.domain, added, removed, errors, durationMs });
+  return { added, removed, errors, durationMs };
+}
+
 export async function syncSite(site: PartnerSite, onProgress?: (e: SyncProgressEvent) => void): Promise<SyncResult> {
   // Circuit-breaker: skip sites with too many consecutive failures
   if (site.consecutiveFailures >= 5) {
     logger.warn('site_sync_circuit_open', { domain: site.domain });
     return { added: 0, removed: 0, errors: 0, durationMs: 0 };
+  }
+
+  // Fully-synced guard: block re-sync if every discovered listing is already in the DB
+  // AND the last sync completed within the past hour.
+  // This prevents wasted Firecrawl credits and accidental removal of valid listings.
+  // After the 1-hour cooldown the sync is allowed again so scheduled jobs can pick up
+  // newly added listings from the partner site.
+  const FULL_SYNC_COOLDOWN_MS = 60 * 60 * 1000; // 1 hour
+  if (
+    site.listingCount > 0 &&
+    site.lastScrapedAt !== null &&
+    Date.now() - site.lastScrapedAt.getTime() < FULL_SYNC_COOLDOWN_MS
+  ) {
+    const syncedCount = await prisma.propertySource_.count({ where: { partnerSiteId: site.id } });
+    if (syncedCount >= site.listingCount) {
+      logger.info('site_sync_skip_fully_synced', {
+        domain: site.domain,
+        listingCount: site.listingCount,
+        syncedCount,
+        lastScrapedAt: site.lastScrapedAt,
+      });
+      return { added: 0, removed: 0, errors: 0, durationMs: 0 };
+    }
+  }
+
+  // First-time sync: detect the best strategy automatically, then persist it.
+  // All subsequent syncs (scheduled or manual) skip this block entirely.
+  // Note: discoveryStrategy has a Prisma @default("map_then_scrape"), so we must
+  // also treat "never successfully synced + still on the default" as first-time.
+  const isUndetected =
+    !site.discoveryStrategy ||
+    (site.discoveryStrategy === 'map_then_scrape' && site.lastSuccessAt === null);
+  if (isUndetected) {
+    onProgress?.({ phase: 'detect', fetched: 0, added: 0 });
+    try {
+      const detected = await autoDetectStrategy(site);
+      site = {
+        ...site,
+        discoveryStrategy: detected.discoveryStrategy,
+        ...(detected.seedUrls ? { seedUrls: detected.seedUrls } : {}),
+      };
+      logger.info('sync_strategy_auto_detected', {
+        domain: site.domain,
+        strategy: detected.discoveryStrategy,
+      });
+    } catch (err) {
+      logger.warn('sync_auto_detect_failed', { domain: site.domain, error: String(err) });
+      // Fall through: syncSite will use the map_then_scrape default below
+    }
   }
 
   const strategy = site.discoveryStrategy ?? 'map_then_scrape';
@@ -393,6 +648,48 @@ export async function syncSite(site: PartnerSite, onProgress?: (e: SyncProgressE
     }
   }
 
+  // egorealestate_api — JanelaDigital/EgoRealEstate CRM platform
+  if (strategy === 'egorealestate_api') {
+    await prisma.partnerSite.update({ where: { id: site.id }, data: { syncStatus: 'running' } });
+    try {
+      return await syncSiteViaEgoRealEstateApi(site, onProgress);
+    } catch (err) {
+      prisma.partnerSite.update({
+        where: { id: site.id },
+        data: { syncStatus: 'error', lastErrorAt: new Date(), consecutiveFailures: { increment: 1 } },
+      }).catch(() => {});
+      throw err;
+    }
+  }
+
+  // map_markers — reads ALL listing data from JS map widget variables (no Firecrawl)
+  if (strategy === 'map_markers') {
+    await prisma.partnerSite.update({ where: { id: site.id }, data: { syncStatus: 'running' } });
+    try {
+      return await syncSiteViaMapMarkers(site, onProgress);
+    } catch (err) {
+      prisma.partnerSite.update({
+        where: { id: site.id },
+        data: { syncStatus: 'error', lastErrorAt: new Date(), consecutiveFailures: { increment: 1 } },
+      }).catch(() => {});
+      throw err;
+    }
+  }
+
+  // sitemap_scrape — reads property sitemap XML for URLs, Firecrawl per page
+  if (strategy === 'sitemap_scrape') {
+    await prisma.partnerSite.update({ where: { id: site.id }, data: { syncStatus: 'running' } });
+    try {
+      return await syncSiteViaSitemapScrape(site, onProgress);
+    } catch (err) {
+      prisma.partnerSite.update({
+        where: { id: site.id },
+        data: { syncStatus: 'error', lastErrorAt: new Date(), consecutiveFailures: { increment: 1 } },
+      }).catch(() => {});
+      throw err;
+    }
+  }
+
   // wp_url_scrape:{cpt} — WP REST API for URLs, Firecrawl for page content
   const wpUrlMatch = strategy.match(/^wp_url_scrape:(.+)$/);
   if (wpUrlMatch) {
@@ -451,6 +748,8 @@ export async function syncSite(site: PartnerSite, onProgress?: (e: SyncProgressE
       });
       return { added: 0, removed: 0, errors: 0, durationMs: Date.now() - start };
     }
+
+    onProgress?.({ phase: 'map', fetched: 0, added: 0, total: allUrls.length });
 
     // Step 2: Load known URLs
     const knownSources = await prisma.propertySource_.findMany({
@@ -511,7 +810,8 @@ export async function syncSite(site: PartnerSite, onProgress?: (e: SyncProgressE
     );
     const firecrawl = getFirecrawl();
 
-    const SCRAPE_CONCURRENCY = 3;
+    const cfg = (site.searchConfig ?? {}) as Record<string, unknown>;
+    const SCRAPE_CONCURRENCY = typeof cfg.scrapeConcurrency === 'number' ? cfg.scrapeConcurrency : 3;
     const ANTIBOT_LIMIT = 3;
     let consecutiveAntibotErrors = 0;
     let aborted = false;
@@ -568,9 +868,18 @@ export async function syncSite(site: PartnerSite, onProgress?: (e: SyncProgressE
         total: mapNewUrls.length,
         added,
       });
+      onProgress?.({
+        phase: 'scrape',
+        fetched: Math.min(i + SCRAPE_CONCURRENCY, mapNewUrls.length),
+        added,
+        total: mapNewUrls.length,
+      });
     }
 
-    // Step 6: Update site stats
+    // Step 6: Update site stats — use actual property_sources count as listingCount
+    // (not allUrls.length, which is the raw MAP result and may include URLs that
+    // failed to scrape, inflating the count and preventing the "Completo" badge).
+    const actualListingCount = await prisma.propertySource_.count({ where: { partnerSiteId: site.id } });
     await prisma.partnerSite.update({
       where: { id: site.id },
       data: {
@@ -578,25 +887,25 @@ export async function syncSite(site: PartnerSite, onProgress?: (e: SyncProgressE
         lastScrapedAt: new Date(),
         lastSuccessAt: new Date(),
         consecutiveFailures: 0,
-        listingCount: allUrls.length,
+        listingCount: actualListingCount,
       },
     });
 
-    // Coverage metrics — log quality signal; warn if below 70%
+    // Coverage metrics — non-critical, don't fail the sync if these queries error
     try {
-      const [total, withPhoto, withPrice, withNeighborhood] = await Promise.all([
-        prisma.propertySource_.count({ where: { partnerSiteId: site.id } }),
+      const [withPhoto, withPrice, withNeighborhood] = await Promise.all([
         prisma.propertySource_.count({ where: { partnerSiteId: site.id, NOT: { photos: { equals: [] } } } }),
         prisma.property.count({ where: { active: true, sources: { some: { partnerSiteId: site.id } }, price: { gt: 0 } } }),
         prisma.property.count({ where: { active: true, sources: { some: { partnerSiteId: site.id } }, NOT: { neighborhood: null } } }),
       ]);
-      const pctPhoto = total > 0 ? Math.round((withPhoto / total) * 100) : 0;
-      const pctPrice = total > 0 ? Math.round((withPrice / total) * 100) : 0;
-      const pctNeighborhood = total > 0 ? Math.round((withNeighborhood / total) * 100) : 0;
+      const n = actualListingCount;
+      const pctPhoto = n > 0 ? Math.round((withPhoto / n) * 100) : 0;
+      const pctPrice = n > 0 ? Math.round((withPrice / n) * 100) : 0;
+      const pctNeighborhood = n > 0 ? Math.round((withNeighborhood / n) * 100) : 0;
       const logLevel = (pctPhoto < 70 || pctPrice < 70 || pctNeighborhood < 70) ? 'warn' : 'info';
       logger[logLevel]('site_sync_coverage', {
         domain: site.domain,
-        total,
+        total: n,
         pctPhoto,
         pctPrice,
         pctNeighborhood,
@@ -734,6 +1043,30 @@ async function extractBulkFromMarkdown(
 // upsertListing — write one scraped listing into properties + property_sources
 // ---------------------------------------------------------------------------
 
+// Photo URLs that indicate a sold/unavailable listing or are not actual photos.
+const INVALID_PHOTO_RE = /vendido|indisponiv|capa-site-filtro|chart\.googleapis\.com|qr[_-]?code/i;
+
+/** Remove non-photo URLs (placeholders, sold-banners, QR codes) from a photos array. */
+function filterValidPhotos(photos: string[]): string[] {
+  return photos.filter((u) => {
+    try {
+      const parsed = new URL(u);
+      return (parsed.protocol === 'http:' || parsed.protocol === 'https:') &&
+        !INVALID_PHOTO_RE.test(u);
+    } catch {
+      return false;
+    }
+  });
+}
+
+/** Return true when the listing's own data signals it is sold or unavailable. */
+function isListingSold(raw: Record<string, unknown>, allPhotos: string[]): boolean {
+  const title = String(raw.title ?? '').toLowerCase();
+  if (/\bvendido\b|\bindispon[íi]vel\b/.test(title)) return true;
+  // If ANY scraped photo URL contains sold/unavailable keywords the listing is gone
+  return allPhotos.some((u) => INVALID_PHOTO_RE.test(u));
+}
+
 const RENT_SIGNALS_RE = /locaç|locacao|aluguel|para\s+alugar|para\s+locaç|temporada/i;
 
 function inferPriceType(raw: Record<string, unknown>, url: string): 'sale' | 'rent' {
@@ -795,10 +1128,27 @@ async function upsertListing(
     : coverPhoto
       ? [coverPhoto]
       : [];
+  const validPhotos = filterValidPhotos(allPhotos);
+  const sold = isListingSold(raw, allPhotos);
   const description = typeof raw.description === 'string' ? raw.description : '';
   const address = typeof raw.address === 'string' ? raw.address.toLowerCase().trim() : '';
   const propertyType = mapPropertyType(typeof raw.property_type === 'string' ? raw.property_type : '');
   const priceType: 'sale' | 'rent' = forcePriceType ?? inferPriceType(raw, url);
+
+  // Skip writing sold/unavailable listings to the DB entirely for new entries.
+  // Existing entries are marked inactive so they drop out of search results.
+  if (sold) {
+    const existing = await prisma.propertySource_.findUnique({
+      where: { source_externalId: { source: 'portal_x', externalId: canonicalUrl } },
+    });
+    if (existing) {
+      await prisma.property.update({
+        where: { id: existing.propertyId },
+        data: { active: false, lastSeenAt: new Date() },
+      });
+    }
+    return;
+  }
 
   await prisma.$transaction(async (tx) => {
     const existing = await tx.propertySource_.findUnique({
@@ -826,7 +1176,7 @@ async function upsertListing(
           rawPrice: price,
           url: canonicalUrl,
           ...(description ? { description } : {}),
-          ...(allPhotos.length > 0 ? { photos: allPhotos } : {}),
+          ...(validPhotos.length > 0 ? { photos: validPhotos } : {}),
           scrapedAt: new Date(),
           partnerSiteId: site.id,
         },
@@ -860,7 +1210,7 @@ async function upsertListing(
           url: canonicalUrl,
           title: String(raw.title ?? ''),
           description: description || undefined,
-          photos: allPhotos,
+          photos: validPhotos,
           rawPrice: sanitizedPrice,
           rawData: raw as object,
           partnerSiteId: site.id,
@@ -879,7 +1229,7 @@ async function upsertListing(
 //   url_only — no structured data; only links available (ACF empty)
 // ---------------------------------------------------------------------------
 
-type WpFieldMode = 'direct' | 'meta' | 'url_only';
+type WpFieldMode = 'direct' | 'meta' | 'url_only' | 'real_homes';
 
 function detectWpFieldMode(item: Record<string, unknown>): { mode: WpFieldMode; metaPrefix: string } {
   const directPriceFields = [
@@ -908,6 +1258,15 @@ function detectWpFieldMode(item: Record<string, unknown>): { mode: WpFieldMode; 
     }
     if (Object.keys(metaObj).length > 0) {
       return { mode: 'meta', metaPrefix: '' };
+    }
+  }
+
+  // Check property_meta (RealHomes plugin: REAL_HOMES_property_* fields)
+  const propertyMeta = item.property_meta;
+  if (propertyMeta && typeof propertyMeta === 'object' && !Array.isArray(propertyMeta)) {
+    const pm = propertyMeta as Record<string, unknown>;
+    if (pm['REAL_HOMES_property_price'] !== undefined && pm['REAL_HOMES_property_price'] !== null && pm['REAL_HOMES_property_price'] !== '') {
+      return { mode: 'real_homes', metaPrefix: '' };
     }
   }
 
@@ -948,6 +1307,46 @@ function extractFromWpMeta(meta: Record<string, unknown>, prefix: string): Recor
       }
       return undefined;
     })(),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// RealHomes plugin (REAL_HOMES_property_*) field extraction
+// ---------------------------------------------------------------------------
+
+function extractFromRealHomesMeta(
+  pm: Record<string, unknown>,
+  item: Record<string, unknown>,
+  canonical: string,
+  embeddedImageUrls: string[],
+): Record<string, unknown> {
+  const price = Number(pm['REAL_HOMES_property_price']) || 0;
+  const bedrooms = Number(pm['REAL_HOMES_property_bedrooms']) || null;
+  const bathrooms = Number(pm['REAL_HOMES_property_bathrooms']) || null;
+  const areaSqm = Number(pm['REAL_HOMES_property_size']) || null;
+  const parking = Number(pm['REAL_HOMES_property_garage']) || null;
+
+  // Address is "Neighborhood, City" — e.g. "Itanhangá, Rio de Janeiro"
+  const address = String(pm['REAL_HOMES_property_address'] ?? '');
+  const parts = address.split(',').map((s) => s.trim());
+  const neighborhood = parts[0] ?? '';
+  const city = parts[1] ?? 'Rio de Janeiro';
+
+  const priceType: 'sale' | 'rent' = SEED_URL_RENT_RE.test(canonical) ? 'rent' : 'sale';
+
+  return {
+    url: canonical,
+    title: (item.title as { rendered?: string } | undefined)?.rendered ?? '',
+    price,
+    bedrooms,
+    bathrooms,
+    area_sqm: areaSqm,
+    parking,
+    neighborhood,
+    city,
+    property_type: '',
+    priceType,
+    image_urls: embeddedImageUrls.length > 0 ? embeddedImageUrls : undefined,
   };
 }
 
@@ -1018,7 +1417,10 @@ async function syncSiteViaWpApi(site: PartnerSite, cpt: string, onProgress?: (e:
         .filter((u): u is string => typeof u === 'string' && u.length > 0);
       let raw: Record<string, unknown>;
 
-      if (fieldMode === 'meta') {
+      if (fieldMode === 'real_homes') {
+        const pm = (item.property_meta && !Array.isArray(item.property_meta) ? item.property_meta : {}) as Record<string, unknown>;
+        raw = extractFromRealHomesMeta(pm, item, canonical, embeddedImageUrls);
+      } else if (fieldMode === 'meta') {
         const meta = (item.meta && !Array.isArray(item.meta) ? item.meta : {}) as Record<string, unknown>;
         const metaExtracted = extractFromWpMeta(meta, metaPrefix);
         // Merge meta image(s) with embedded featured media photos
@@ -1192,7 +1594,9 @@ async function syncSiteViaWpUrlScrape(site: PartnerSite, cpt: string): Promise<S
     where: { partnerSiteId: site.id },
     select: { url: true, propertyId: true },
   });
-  const knownUrlSet = new Set(knownSources.map((s) => s.url));
+  // Merge PropertySource_ URLs with knownUrls cache so listings that were
+  // discovered but failed extraction in a previous run are not re-scraped.
+  const knownUrlSet = new Set([...knownSources.map((s) => s.url), ...site.knownUrls]);
   const currentUrlSet = new Set(allCanonicalUrls);
 
   const newUrls = allCanonicalUrls.filter((url) => !knownUrlSet.has(url));
@@ -1272,7 +1676,7 @@ async function syncSiteViaWpUrlScrape(site: PartnerSite, cpt: string): Promise<S
     }
   }
 
-  // Step 5: update site stats
+  // Step 5: update site stats + persist knownUrls cache for next delta
   await prisma.partnerSite.update({
     where: { id: site.id },
     data: {
@@ -1281,11 +1685,110 @@ async function syncSiteViaWpUrlScrape(site: PartnerSite, cpt: string): Promise<S
       lastSuccessAt: new Date(),
       consecutiveFailures: 0,
       listingCount: allCanonicalUrls.length,
+      knownUrls: allCanonicalUrls,
     },
   });
 
   const durationMs = Date.now() - start;
   logger.info('wp_url_sync_complete', { domain: site.domain, cpt, added, removed, errors, durationMs });
+  return { added, removed, errors, durationMs };
+}
+
+// ---------------------------------------------------------------------------
+// syncSiteViaSitemapScrape — Yoast/RankMath sitemap → Firecrawl per-page
+//
+// Reads the property sitemap XML directly (one HTTP request, no Firecrawl MAP
+// credits) to get the deterministic list of all property URLs, then
+// Firecrawl-scrapes + LLM-extracts only the new/changed ones.
+//
+// seedUrls[0] must be the sitemap XML URL
+// (e.g. https://toprio.com.br/property-sitemap.xml)
+// ---------------------------------------------------------------------------
+
+async function syncSiteViaSitemapScrape(site: PartnerSite, onProgress?: (e: SyncProgressEvent) => void): Promise<SyncResult> {
+  const start = Date.now();
+  const sitemapUrl = site.seedUrls[0];
+  if (!sitemapUrl) throw new Error('sitemap_scrape: seedUrls[0] must be the sitemap XML URL');
+
+  const sitemapResp = await fetch(sitemapUrl, {
+    headers: { 'User-Agent': 'Mozilla/5.0 (compatible; PropMatchBot/1.0)' },
+    signal: AbortSignal.timeout(20_000),
+  });
+  if (!sitemapResp.ok) throw new Error(`Sitemap fetch failed: ${sitemapResp.status}`);
+  const xml = await sitemapResp.text();
+
+  // Parse all <loc> elements; keep only detail pages (≥2 path segments)
+  const allSitemapUrls = [...xml.matchAll(/<loc>([^<]+)<\/loc>/g)]
+    .map((m) => m[1]!.trim())
+    .filter((u) => {
+      try { return new URL(u).pathname.split('/').filter(Boolean).length >= 2; }
+      catch { return false; }
+    });
+
+  const currentSet = new Set(allSitemapUrls.map(canonicalListingUrl));
+
+  const knownSources = await prisma.propertySource_.findMany({
+    where: { partnerSiteId: site.id },
+    select: { url: true, propertyId: true },
+  });
+  const knownUrlSet = new Set([...knownSources.map((s) => s.url), ...site.knownUrls]);
+  const newUrls = [...currentSet].filter((u) => !knownUrlSet.has(u));
+
+  let removed = 0;
+  const removedSources = knownSources.filter((s) => !currentSet.has(s.url));
+  if (removedSources.length > 0) {
+    const propertyIds = [...new Set(removedSources.map((s) => s.propertyId))];
+    await prisma.property.updateMany({ where: { id: { in: propertyIds } }, data: { active: false } });
+    removed = propertyIds.length;
+  }
+
+  const firecrawl = getFirecrawl();
+  const SCRAPE_CONCURRENCY = 3;
+  let added = 0;
+  let errors = 0;
+
+  for (let i = 0; i < newUrls.length; i += SCRAPE_CONCURRENCY) {
+    const chunk = newUrls.slice(i, i + SCRAPE_CONCURRENCY);
+    onProgress?.({ phase: 'scrape', fetched: i + chunk.length, added, total: newUrls.length });
+
+    const settled = await Promise.allSettled(
+      chunk.map(async (url) => {
+        const result = await firecrawl.scrape(url, { formats: ['markdown'], onlyMainContent: false, timeout: 45000 });
+        const markdown = (result as Record<string, unknown>).markdown as string | undefined ?? '';
+        const raw = await extractFromMarkdown(markdown, url);
+        return { url, raw };
+      }),
+    );
+
+    for (const outcome of settled) {
+      if (outcome.status === 'rejected') { errors++; continue; }
+      const { url, raw } = outcome.value;
+      if (!raw?.price || !raw?.title) { errors++; continue; }
+      try {
+        await upsertListing(raw, url, site);
+        added++;
+      } catch (err) {
+        logger.warn('sitemap_scrape_upsert_error', { url, error: String(err) });
+        errors++;
+      }
+    }
+  }
+
+  const actualListingCount = await prisma.propertySource_.count({ where: { partnerSiteId: site.id } });
+  await prisma.partnerSite.update({
+    where: { id: site.id },
+    data: {
+      syncStatus: 'done',
+      listingCount: actualListingCount,
+      knownUrls: [...currentSet],
+      lastSuccessAt: new Date(),
+      lastScrapedAt: new Date(),
+      consecutiveFailures: 0,
+    },
+  });
+
+  const durationMs = Date.now() - start;
+  logger.info('sitemap_scrape_complete', { domain: site.domain, sitemapUrl, total: currentSet.size, added, removed, errors, durationMs });
   return { added, removed, errors, durationMs };
 }
 
@@ -1313,7 +1816,8 @@ async function syncSiteViaSiteMidasApi(site: PartnerSite, onProgress?: (e: SyncP
     'Referer': `${base}/imoveis/venda`,
   };
 
-  // Single call fetches all listings (venda + aluguel) without pagination
+  // Try single-call mode first (no-pagination=s). Large sites OOM on this
+  // and return HTML — fall back to paginated mode automatically.
   let items: Record<string, unknown>[] = [];
   try {
     const resp = await fetch(endpoint, {
@@ -1322,11 +1826,46 @@ async function syncSiteViaSiteMidasApi(site: PartnerSite, onProgress?: (e: SyncP
       body: 'tipoNegocio[V]=true&tipoNegocio[A]=true&no-pagination=s',
       signal: AbortSignal.timeout(60_000),
     });
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    const data = (await resp.json()) as { imoveis?: Record<string, unknown>[] };
-    items = data.imoveis ?? [];
-  } catch (err) {
-    logger.warn('sitemidas_api_fetch_failed', { domain: site.domain, error: String(err) });
+    if (resp.ok) {
+      const ct = resp.headers.get('content-type') ?? '';
+      if (ct.includes('json')) {
+        const data = (await resp.json()) as { imoveis?: Record<string, unknown>[] };
+        items = data.imoveis ?? [];
+      }
+    }
+  } catch {
+    // fall through to paginated mode
+  }
+
+  // Paginated fallback: fetch page by page using infos.ultimaPagina
+  if (items.length === 0) {
+    logger.info('sitemidas_api_paginated_mode', { domain: site.domain });
+    let lastPage = 1;
+    for (let page = 1; page <= lastPage; page++) {
+      try {
+        const resp = await fetch(endpoint, {
+          method: 'POST',
+          headers,
+          body: `tipoNegocio[V]=true&tipoNegocio[A]=true&page=${page}`,
+          signal: AbortSignal.timeout(30_000),
+        });
+        if (!resp.ok) break;
+        const ct = resp.headers.get('content-type') ?? '';
+        if (!ct.includes('json')) break;
+        const data = (await resp.json()) as {
+          imoveis?: Record<string, unknown>[];
+          infos?: { ultimaPagina?: number };
+        };
+        const pageItems = data.imoveis ?? [];
+        if (pageItems.length === 0) break;
+        items.push(...pageItems);
+        if (page === 1) lastPage = data.infos?.ultimaPagina ?? 1;
+        onProgress?.({ phase: 'fetched', fetched: items.length, added: 0, total: lastPage * pageItems.length });
+      } catch (err) {
+        logger.warn('sitemidas_api_page_failed', { domain: site.domain, page, error: String(err) });
+        break;
+      }
+    }
   }
 
   logger.info('sitemidas_api_fetched', { domain: site.domain, total: items.length });
@@ -1528,7 +2067,7 @@ async function syncSiteViaKenloApi(site: PartnerSite, onProgress?: (e: SyncProgr
 
   await prisma.partnerSite.update({
     where: { id: site.id },
-    data: { syncStatus: 'done', lastScrapedAt: new Date(), lastSuccessAt: new Date(), consecutiveFailures: 0, listingCount: allCanonicalUrls.length },
+    data: { syncStatus: 'done', lastScrapedAt: new Date(), lastSuccessAt: new Date(), consecutiveFailures: 0, listingCount: currentSet.size },
   });
 
   // Coverage metrics — log quality signal; warn if below 70%
@@ -1670,7 +2209,7 @@ async function syncSiteViaKarocaBuscar(site: PartnerSite, onProgress?: (e: SyncP
 
   await prisma.partnerSite.update({
     where: { id: site.id },
-    data: { syncStatus: 'done', lastScrapedAt: new Date(), lastSuccessAt: new Date(), consecutiveFailures: 0, listingCount: allCanonicalUrls.length },
+    data: { syncStatus: 'done', lastScrapedAt: new Date(), lastSuccessAt: new Date(), consecutiveFailures: 0, listingCount: currentSet.size },
   });
 
   // Coverage metrics — log quality signal; warn if below 70%
@@ -1698,7 +2237,7 @@ async function syncSiteViaKarocaBuscar(site: PartnerSite, onProgress?: (e: SyncP
   }
 
   const durationMs = Date.now() - start;
-  logger.info('karioca_buscar_sync_complete', { domain: site.domain, added, removed, errors, durationMs });
+  logger.info('karioca_buscar_sync_complete', { domain: site.domain, added, removed, errors, uniqueUrls: currentSet.size, durationMs });
   return { added, removed, errors, durationMs };
 }
 
@@ -1852,7 +2391,7 @@ async function syncSiteViaVistaHostApi(site: PartnerSite, onProgress?: (e: SyncP
 
   await prisma.partnerSite.update({
     where: { id: site.id },
-    data: { syncStatus: 'done', lastScrapedAt: new Date(), lastSuccessAt: new Date(), consecutiveFailures: 0, listingCount: allCanonicalUrls.length },
+    data: { syncStatus: 'done', lastScrapedAt: new Date(), lastSuccessAt: new Date(), consecutiveFailures: 0, listingCount: currentSet.size },
   });
 
   // Coverage metrics — log quality signal; warn if below 70%
@@ -2000,4 +2539,200 @@ export async function searchCachedInventory(
         scrapedAt: src.scrapedAt.toISOString(),
       };
     });
+}
+
+// ---------------------------------------------------------------------------
+// syncSiteViaEgoRealEstateApi — JanelaDigital/EgoRealEstate CRM platform
+//
+// API: GET https://websiteapi.egorealestate.com/v1/Properties?nre=50&pag=N
+// Auth: authorizationtoken header (stored in site.searchConfig.authToken)
+// Config stored in site.searchConfig: { authToken, lbl, bus? }
+//   lbl  — site-specific label ID found in page JS (e.g. "35052162")
+//   bus  — array of business types to sync; default ["1","2"] (sale, rent)
+// ~579 listings = ~12 API calls of 50 vs 193 Firecrawl batch scrapes of 3.
+// ---------------------------------------------------------------------------
+
+interface EgoRealEstateProperty {
+  ID: number;
+  UID: string;
+  Reference: string;
+  Title: string;
+  Type: string;
+  Parish: string;
+  Zone: string;
+  Municipality: string;
+  Rooms: number;
+  Bathrooms: number;
+  NetArea: number;
+  GrossArea: number;
+  LandArea: number;
+  Description: string;
+  Thumbnail: string;
+  Images: Array<{ Thumbnail: string; Thumbnail_640X480: string; Original: string }>;
+  PropertyBusiness: Array<{
+    BusinessID: number;
+    Prices: Array<{ PriceValue: number; FormattedPrice: string }>;
+  }>;
+}
+
+async function syncSiteViaEgoRealEstateApi(
+  site: PartnerSite,
+  onProgress?: (e: SyncProgressEvent) => void,
+): Promise<SyncResult> {
+  const cfg = (site.searchConfig ?? {}) as Record<string, unknown>;
+  const authToken = String(cfg.authToken ?? '');
+  const lbl = String(cfg.lbl ?? '');
+  if (!authToken) throw new Error('egorealestate_api: authToken missing in searchConfig');
+
+  const start = Date.now();
+  let added = 0, removed = 0, errors = 0;
+  const allCanonicalUrls: string[] = [];
+  const base = site.baseUrl.replace(/\/$/, '');
+  const EGO_API = 'https://websiteapi.egorealestate.com/v1/Properties';
+  const PAGE_SIZE = 50;
+  const busTypes = (cfg.bus as string[] | undefined) ?? ['1', '2'];
+
+  let anyPageSucceeded = false;
+
+  for (const bus of busTypes) {
+    const priceType: 'sale' | 'rent' = bus === '2' ? 'rent' : 'sale';
+    let page = 1;
+    let totalRecords: number | null = null;
+
+    while (true) {
+      const vui = crypto.randomUUID();
+      const params: Record<string, string> = {
+        restparams: '', nre: String(PAGE_SIZE), stt_not_in: '104,7',
+        bus, gather_attributes: '1', dsrt: '1', lng: 'pt-br',
+        oar: '1', vui, pag: String(page), _: String(Date.now()),
+      };
+      if (lbl) params.lbl = lbl;
+      const qs = new URLSearchParams(params).toString();
+
+      let props: EgoRealEstateProperty[] = [];
+      let total = 0;
+      try {
+        const resp = await fetch(`${EGO_API}?${qs}`, {
+          headers: {
+            authorizationtoken: authToken,
+            'x-served-by': 'JanelaDigital',
+            'x-async': 'true',
+            userinfotoken: '',
+            accept: 'application/json, text/javascript, */*; q=0.01',
+            'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+            Referer: site.baseUrl,
+            'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            'sec-ch-ua': '"Chromium";v="124", "Google Chrome";v="124"',
+            'sec-ch-ua-mobile': '?0',
+            'sec-ch-ua-platform': '"Linux"',
+          },
+          signal: AbortSignal.timeout(30_000),
+        });
+        if (!resp.ok) {
+          const jdWarning = resp.headers.get('jd-warning');
+          logger.warn('egorealestate_api_http_error', { domain: site.domain, bus, page, status: resp.status, jdWarning });
+          // 430 = IP blocked by EgoRealEstate/JanelaDigital CDN — abort entire sync to avoid
+          // falsely marking all existing listings as removed.
+          if (resp.status === 430 || resp.status === 403) {
+            throw new Error(`egorealestate_api: IP blocked by EgoRealEstate (HTTP ${resp.status}, jd-warning: ${jdWarning ?? 'none'})`);
+          }
+          break;
+        }
+        const data = (await resp.json()) as { Properties: EgoRealEstateProperty[]; TotalRecords: number };
+        props = data.Properties ?? [];
+        total = data.TotalRecords ?? 0;
+        anyPageSucceeded = true;
+      } catch (err) {
+        // Re-throw blocking errors; log and break on transient fetch failures.
+        if (err instanceof Error && err.message.startsWith('egorealestate_api:')) throw err;
+        logger.warn('egorealestate_api_fetch_error', { domain: site.domain, bus, page, error: String(err) });
+        break;
+      }
+      if (props.length === 0) break;
+      if (totalRecords === null) totalRecords = total;
+
+      for (const prop of props) {
+        const propUrl = `${base}/imovel/${prop.ID}`;
+        allCanonicalUrls.push(propUrl);
+
+        const bizEntry = prop.PropertyBusiness?.find((b) => b.BusinessID === Number(bus));
+        const price = bizEntry?.Prices?.[0]?.PriceValue ?? 0;
+        const area =
+          prop.NetArea > 0 ? prop.NetArea :
+          prop.GrossArea > 0 ? prop.GrossArea :
+          prop.LandArea > 0 ? prop.LandArea : null;
+        const imageUrls = (prop.Images ?? [])
+          .slice(0, 15)
+          .map((img) => img.Thumbnail_640X480 || img.Original || img.Thumbnail)
+          .filter(Boolean);
+
+        const raw: Record<string, unknown> = {
+          title: prop.Title || `${prop.Type} ${prop.Parish}`.trim(),
+          price,
+          bedrooms: prop.Rooms > 0 ? prop.Rooms : null,
+          bathrooms: prop.Bathrooms > 0 ? prop.Bathrooms : null,
+          area_sqm: area,
+          neighborhood: prop.Parish || prop.Zone || '',
+          city: prop.Municipality || 'Rio de Janeiro',
+          property_type: prop.Type || '',
+          description: prop.Description?.substring(0, 500) || '',
+          image_urls: imageUrls.length > 0 ? imageUrls : undefined,
+          priceType,
+        };
+
+        try {
+          await upsertListing(raw, propUrl, site, priceType);
+          added++;
+        } catch (err) {
+          logger.warn('egorealestate_api_upsert_error', { domain: site.domain, propId: prop.ID, error: String(err) });
+          errors++;
+        }
+      }
+
+      logger.info('egorealestate_api_page_done', { domain: site.domain, bus, page, fetched: props.length, added });
+      onProgress?.({ phase: 'page', page, fetched: props.length, added, total: totalRecords ?? undefined });
+      page++;
+      if (page > 500) break;
+    }
+  }
+
+  const currentSet = new Set(allCanonicalUrls);
+
+  // Only clean up stale listings when at least one API page succeeded.
+  // Skipping this when anyPageSucceeded=false prevents mass-deactivation on transient failures.
+  if (anyPageSucceeded) {
+    const knownSources = await prisma.propertySource_.findMany({
+      where: { partnerSiteId: site.id },
+      select: { url: true, propertyId: true },
+    });
+    const removedSources = knownSources.filter((s) => !currentSet.has(s.url));
+    if (removedSources.length > 0) {
+      const ids = [...new Set(removedSources.map((s) => s.propertyId))];
+      await prisma.property.updateMany({ where: { id: { in: ids } }, data: { active: false } });
+      removed = ids.length;
+    }
+  }
+
+  await prisma.partnerSite.update({
+    where: { id: site.id },
+    data: { syncStatus: 'done', lastScrapedAt: new Date(), lastSuccessAt: new Date(), consecutiveFailures: 0, listingCount: currentSet.size },
+  });
+
+  try {
+    const [total, withPhoto, withPrice, withNeighborhood] = await Promise.all([
+      prisma.propertySource_.count({ where: { partnerSiteId: site.id } }),
+      prisma.propertySource_.count({ where: { partnerSiteId: site.id, NOT: { photos: { equals: [] } } } }),
+      prisma.property.count({ where: { active: true, sources: { some: { partnerSiteId: site.id } }, price: { gt: 0 } } }),
+      prisma.property.count({ where: { active: true, sources: { some: { partnerSiteId: site.id } }, NOT: { neighborhood: null } } }),
+    ]);
+    const pctPhoto = total > 0 ? Math.round((withPhoto / total) * 100) : 0;
+    const pctPrice = total > 0 ? Math.round((withPrice / total) * 100) : 0;
+    const pctNeighborhood = total > 0 ? Math.round((withNeighborhood / total) * 100) : 0;
+    const logLevel = (pctPhoto < 70 || pctPrice < 70 || pctNeighborhood < 70) ? 'warn' : 'info';
+    logger[logLevel]('site_sync_coverage', { domain: site.domain, total, pctPhoto, pctPrice, pctNeighborhood });
+  } catch { /* non-critical */ }
+
+  const durationMs = Date.now() - start;
+  logger.info('egorealestate_api_sync_complete', { domain: site.domain, added, removed, errors, durationMs });
+  return { added, removed, errors, durationMs };
 }

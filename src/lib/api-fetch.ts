@@ -73,15 +73,25 @@ async function ensureFreshToken(): Promise<string | null> {
   return token;
 }
 
-function redirectToLogin(): void {
-  if (typeof window !== 'undefined') {
-    window.location.href = '/login';
+async function redirectToLogin(): Promise<void> {
+  if (typeof window === 'undefined') return;
+  localStorage.removeItem('access_token');
+  try {
+    await fetch('/api/v1/auth/logout', { method: 'POST' });
+  } catch {
+    // proceed to redirect even if logout call fails
   }
+  window.location.href = '/login';
 }
 
 /** Returns a fresh (non-expired) access token, or null if refresh failed. */
 export async function getFreshToken(): Promise<string | null> {
   return ensureFreshToken();
+}
+
+/** Clears the stored access token (use before redirecting to login). */
+export function clearAccessToken(): void {
+  if (typeof window !== 'undefined') localStorage.removeItem('access_token');
 }
 
 export async function apiFetch(url: string, options: RequestInit = {}): Promise<Response> {
@@ -99,7 +109,7 @@ export async function apiFetch(url: string, options: RequestInit = {}): Promise<
   if (res.status === 401) {
     const newToken = await doRefresh();
     if (!newToken) {
-      redirectToLogin();
+      await redirectToLogin();
       return res;
     }
     const retryRes = await fetch(url, {
@@ -107,7 +117,7 @@ export async function apiFetch(url: string, options: RequestInit = {}): Promise<
       headers: { ...existingHeaders, Authorization: `Bearer ${newToken}` },
     });
     if (retryRes.status === 401) {
-      redirectToLogin();
+      await redirectToLogin();
     }
     return retryRes;
   }

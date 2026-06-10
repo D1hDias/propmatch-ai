@@ -7,21 +7,23 @@ export const dynamic = 'force-dynamic';
 
 // POST /api/v1/partner-sites/probe
 // Body: { url: string }
-// Probes a URL and suggests the best discoveryStrategy + detected CPT (for WP).
+// Probes a URL for reachability and suggests the best discoveryStrategy + detected CPT (for WP).
 // Used during partner onboarding to auto-configure new sites.
 
 interface ProbeResult {
+  reachable: boolean;
   suggestedStrategy: string;
   confidence: 'high' | 'medium' | 'low';
   details: Record<string, unknown>;
 }
 
-async function safeFetch(url: string, opts?: RequestInit): Promise<Response | null> {
+async function safeFetch(url: string, opts?: RequestInit & { timeoutMs?: number }): Promise<Response | null> {
+  const { timeoutMs = 8000, ...fetchOpts } = opts ?? {};
   try {
     return await fetch(url, {
-      ...opts,
-      signal: AbortSignal.timeout(8000),
-      headers: { Accept: 'application/json', 'User-Agent': 'Mozilla/5.0 (compatible; PropMatchBot/1.0)', ...(opts?.headers ?? {}) },
+      ...fetchOpts,
+      signal: AbortSignal.timeout(timeoutMs),
+      headers: { Accept: 'application/json', 'User-Agent': 'Mozilla/5.0 (compatible; PropMatchBot/1.0)', ...(fetchOpts.headers ?? {}) },
     });
   } catch {
     return null;
@@ -34,8 +36,19 @@ async function probeUrl(rawUrl: string): Promise<ProbeResult> {
     const u = new URL(rawUrl);
     base = u.origin;
   } catch {
-    return { suggestedStrategy: 'map_then_scrape', confidence: 'low', details: { error: 'Invalid URL' } };
+    return { reachable: false, suggestedStrategy: 'map_then_scrape', confidence: 'low', details: { error: 'Invalid URL' } };
   }
+
+  // ── 0. Reachability check ─────────────────────────────────────────────────
+  // Any HTTP response (even 4xx) means the domain resolves and the site exists.
+  // null means DNS failure, connection refused, or timeout → site doesn't exist.
+  // We also reuse this response for the generic HTML analysis in step 6.
+  const htmlResp = await safeFetch(base, { headers: { Accept: 'text/html' }, timeoutMs: 5000 });
+  if (!htmlResp) {
+    return { reachable: false, suggestedStrategy: 'map_then_scrape', confidence: 'low', details: { error: 'Site unreachable' } };
+  }
+  // Read body once here — reused by EgoRealEstate probe and generic HTML analysis.
+  const html = htmlResp.ok ? await htmlResp.text().catch(() => '') : '';
 
   // ── 1. WordPress REST API probe ──────────────────────────────────────────
   const wpRoot = await safeFetch(`${base}/wp-json/`);
@@ -58,6 +71,7 @@ async function probeUrl(rawUrl: string): Promise<ProbeResult> {
       }
       if (detectedCpt) {
         return {
+          reachable: true,
           suggestedStrategy: detectedCpt === 'estate' ? 'wp_rest_api' : `wp_rest_api:${detectedCpt}`,
           confidence: 'high',
           details: { cms: 'WordPress', cpt: detectedCpt, wpNamespaces: namespace },
@@ -65,6 +79,7 @@ async function probeUrl(rawUrl: string): Promise<ProbeResult> {
       }
       // WP site but no structured CPT — use URL scrape fallback
       return {
+        reachable: true,
         suggestedStrategy: 'wp_url_scrape:post',
         confidence: 'medium',
         details: { cms: 'WordPress', cpt: null, hint: 'No real estate CPT detected. Check custom post types in /wp-json/wp/v2/types.' },
@@ -78,7 +93,7 @@ async function probeUrl(rawUrl: string): Promise<ProbeResult> {
     if (resp?.ok) {
       const data = await resp.json().catch(() => ({})) as Record<string, unknown>;
       if (Array.isArray(data.imoveis) || Array.isArray(data.data)) {
-        return { suggestedStrategy: 'vistahost_api', confidence: 'high', details: { cms: 'VistaHost', probedPath: path } };
+        return { reachable: true, suggestedStrategy: 'vistahost_api', confidence: 'high', details: { cms: 'VistaHost', probedPath: path } };
       }
     }
   }
@@ -92,16 +107,36 @@ async function probeUrl(rawUrl: string): Promise<ProbeResult> {
   if (sitemidasResp?.ok) {
     const data = await sitemidasResp.json().catch(() => ({})) as Record<string, unknown>;
     if (Array.isArray(data.imoveis)) {
-      return { suggestedStrategy: 'sitemidas_api', confidence: 'high', details: { cms: 'Sitemidas/MidasCRM' } };
+      return { reachable: true, suggestedStrategy: 'sitemidas_api', confidence: 'high', details: { cms: 'Sitemidas/MidasCRM' } };
     }
   }
 
-  // ── 4. Kenlo probe ───────────────────────────────────────────────────────
+  // ── 4. EgoRealEstate (JanelaDigital) probe ───────────────────────────────
+  // Detected by /DevGear/mainScript.js bundle + APIToken in HTML
+  if (html.includes('/DevGear/mainScript.js') || html.includes('egorealestate.com')) {
+    const tokenMatch = html.match(/[Aa][Pp][Ii][Tt]oken\s*[=:,]\s*['"]([A-Za-z0-9+/=]{20,})['"]/);
+    const authToken = tokenMatch?.[1] ?? '';
+    if (authToken) {
+      const lblMatch =
+        html.match(/['"lbl['"]\s*[=:]\s*['"]?(\d{5,})/i) ??
+        html.match(/\blbl=(\d{5,})/) ??
+        html.match(/data-lbl=["'](\d{5,})["']/);
+      const lbl = lblMatch?.[1] ?? '';
+      return {
+        reachable: true,
+        suggestedStrategy: 'egorealestate_api',
+        confidence: 'high',
+        details: { cms: 'EgoRealEstate (JanelaDigital)', authToken, lbl },
+      };
+    }
+  }
+
+  // ── 5. Kenlo probe ───────────────────────────────────────────────────────
   const kenloResp = await safeFetch(`${base}/api/listings?page=1`);
   if (kenloResp?.ok) {
     const data = await kenloResp.json().catch(() => ({})) as Record<string, unknown>;
     if (Array.isArray(data.data) && data.count !== undefined) {
-      return { suggestedStrategy: 'kenlo_api', confidence: 'high', details: { cms: 'Kenlo (ex-Imobzi)' } };
+      return { reachable: true, suggestedStrategy: 'kenlo_api', confidence: 'high', details: { cms: 'Kenlo (ex-Imobzi)' } };
     }
   }
 
@@ -110,18 +145,16 @@ async function probeUrl(rawUrl: string): Promise<ProbeResult> {
   if (kariocaResp?.ok) {
     const html = await kariocaResp.text().catch(() => '');
     if (html.includes('/imovel/') && html.includes('finality_id')) {
-      return { suggestedStrategy: 'karioca_buscar', confidence: 'high', details: { cms: 'Karioca' } };
+      return { reachable: true, suggestedStrategy: 'karioca_buscar', confidence: 'high', details: { cms: 'Karioca' } };
     }
   }
 
   // ── 6. Generic HTML analysis ─────────────────────────────────────────────
-  const htmlResp = await safeFetch(base, { headers: { Accept: 'text/html' } });
-  const html = htmlResp?.ok ? await htmlResp.text().catch(() => '') : '';
-
   const needsJs = /window\.__nuxt|window\.__next|<div id="app">|<div id="root">|ng-version/i.test(html);
   const hasSitemap = !!(await safeFetch(`${base}/sitemap.xml`))?.ok;
 
   return {
+    reachable: true,
     suggestedStrategy: 'map_then_scrape',
     confidence: needsJs ? 'low' : 'medium',
     details: {
