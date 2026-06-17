@@ -1,0 +1,33 @@
+[Unit]
+Description=PropMatch AI — Next.js application
+After=network.target postgresql.service redis.service
+Wants=postgresql.service redis.service
+
+[Service]
+Type=simple
+User=propmatch
+Group=propmatch
+WorkingDirectory=/opt/propmatch
+EnvironmentFile=/etc/propmatch.env
+
+ExecStart=/usr/local/bin/node_modules/.bin/next start
+# Fallback caso o binário não esteja no PATH padrão
+# ExecStart=/home/propmatch/.local/share/pnpm/pnpm next start
+
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=propmatch
+
+# Segurança
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=read-only
+PrivateTmp=true
+
+# Dá tempo suficiente para o Next.js compilar rotas no primeiro start
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target
