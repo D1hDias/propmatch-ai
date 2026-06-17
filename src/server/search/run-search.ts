@@ -4,7 +4,7 @@ import { mockAdapter } from './adapters/mock';
 import { scrapeCustomUrl } from './adapters/custom-url';
 import { prisma } from '@/server/db/client';
 import { scrapePartnerSite } from '@/server/partners/strategy';
-import { searchCachedInventory } from '@/server/partners/site-sync';
+import { searchCachedInventory } from '@/server/partners/cached-inventory';
 import { enqueueSiteSync } from '@/server/partners/sync-queue';
 import type { NormalizedListing, SearchCriteria, SourceAdapter } from './types';
 
@@ -59,7 +59,12 @@ async function getPartnerAdapters(opts: { userId?: string; partnerSiteIds?: stri
       const syncFreshMs = site.syncIntervalDays * 24 * 60 * 60 * 1000;
 
       // A site has usable cache once it has completed at least one sync.
-      const hasCache = site.syncStatus === 'done';
+      // Also treat sites with indexed stock (listingCount > 0) as having a cache
+      // even when syncStatus hasn't been updated to 'done' yet (e.g. data loaded
+      // via external scripts or syncStatus stale after server restart).
+      const hasCache =
+        site.syncStatus === 'done' ||
+        (site.listingCount > 0 && site.syncStatus !== 'error' && site.syncStatus !== 'running');
       const isFresh  = hasCache && syncAgeMs < syncFreshMs;
 
       return {
@@ -92,7 +97,10 @@ async function getPartnerAdapters(opts: { userId?: string; partnerSiteIds?: stri
           // No cache yet (first time): scrape live and block until done,
           // then trigger a background sync so subsequent searches use cache.
           void enqueueSiteSync(site.id);
-          return scrapePartnerSite(site, c);
+          const liveListings = await scrapePartnerSite(site, c);
+          // Tag each listing with the partner site so persistResults can link
+          // PropertySource_ rows correctly (avoids orphaned rows with null partnerSiteId).
+          return liveListings.map((l) => ({ ...l, partnerSiteId: site.id }));
         },
         healthCheck: () => Promise.resolve({
           source: site.domain,

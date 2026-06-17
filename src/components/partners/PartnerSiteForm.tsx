@@ -138,7 +138,8 @@ export function PartnerSiteForm({ onCreated }: Props) {
         apiFetch(`/api/v1/partner-sites/${body.data.id}/discover`, { method: 'POST' }).catch(() => {});
         setShowForm(false);
       } else {
-        // Site already existed in the platform — it's already in the list, don't add again.
+        // Site already existed in the platform — subscribe this broker to it and add to their list.
+        onCreated(body.data);
         setInfo(`"${body.data.name}" já estava na plataforma e já está disponível para busca.`);
         setTimeout(() => { setInfo(''); setShowForm(false); }, 3000);
       }

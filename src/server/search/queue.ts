@@ -389,6 +389,7 @@ async function persistResults(
         rawPrice: String(listing.price),
         rawData: { amenities: listing.amenities, lat: listing.lat, lng: listing.lng },
         scrapedAt: new Date(),
+        ...(listing.partnerSiteId ? { partnerSiteId: listing.partnerSiteId } : {}),
       },
       update: {
         propertyId: property.id,
@@ -396,6 +397,7 @@ async function persistResults(
         scrapedAt: new Date(),
         description: listing.description,
         photos: listing.photos,
+        ...(listing.partnerSiteId ? { partnerSiteId: listing.partnerSiteId } : {}),
       },
     });
 

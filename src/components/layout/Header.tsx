@@ -13,12 +13,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-
-const MOCK_USER = {
-  name: 'Diego Dias',
-  email: 'dihdias1987@gmail.com',
-  initials: 'DD',
-};
+import { useCurrentUser } from '@/hooks/useCurrentUser';
 
 interface HeaderProps {
   onMenuClick: () => void;
@@ -27,6 +22,7 @@ interface HeaderProps {
 
 export function Header({ onMenuClick, pageTitle = 'Dashboard' }: HeaderProps) {
   const router = useRouter();
+  const currentUser = useCurrentUser();
 
   function handleLogout() {
     localStorage.removeItem('access_token');
@@ -78,20 +74,20 @@ export function Header({ onMenuClick, pageTitle = 'Dashboard' }: HeaderProps) {
             >
               <Avatar className="w-8 h-8">
                 <AvatarFallback className="bg-primary text-white text-xs font-semibold">
-                  {MOCK_USER.initials}
+                  {currentUser?.initials ?? '…'}
                 </AvatarFallback>
               </Avatar>
               <div className="hidden md:block text-left">
-                <p className="text-sm font-semibold text-foreground leading-none">{MOCK_USER.name}</p>
-                <p className="text-xs text-muted-foreground mt-0.5 leading-none">{MOCK_USER.email}</p>
+                <p className="text-sm font-semibold text-foreground leading-none">{currentUser?.name || currentUser?.email}</p>
+                <p className="text-xs text-muted-foreground mt-0.5 leading-none">{currentUser?.email}</p>
               </div>
               <ChevronDown className="w-4 h-4 text-muted-foreground ml-1" />
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-56 shadow-dropdown">
             <DropdownMenuLabel>
-              <p className="text-sm font-semibold">{MOCK_USER.name}</p>
-              <p className="text-xs text-muted-foreground font-normal">{MOCK_USER.email}</p>
+              <p className="text-sm font-semibold">{currentUser?.name || currentUser?.email}</p>
+              <p className="text-xs text-muted-foreground font-normal">{currentUser?.email}</p>
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
             <DropdownMenuItem asChild className="gap-2 cursor-pointer">

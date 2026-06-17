@@ -19,28 +19,6 @@ export interface MatchedListing {
   reason: string;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-const MATCH_RESPONSE_SCHEMA = {
-  type: 'object' as const,
-  properties: {
-    results: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: {
-          index:  { type: 'number', description: 'Zero-based index of the listing in the input array' },
-          score:  { type: 'number', description: 'Compatibility score 0–100' },
-          reason: { type: 'string', description: 'One sentence in PT-BR explaining the score' },
-        },
-        required: ['index', 'score', 'reason'],
-        additionalProperties: false,
-      },
-    },
-  },
-  required: ['results'],
-  additionalProperties: false,
-};
-
 // ---------------------------------------------------------------------------
 // Rule-based fallback scorer — used when the LLM call fails.
 // Computes a deterministic score (0–100) from hard criteria matching.
@@ -50,7 +28,6 @@ function ruleBasedScore(listing: NormalizedListing, criteria?: SearchCriteria): 
   if (!criteria) return 50;
 
   let score = 70; // baseline — passed hardFilter so basic criteria match
-  const reasons: string[] = [];
 
   // Bedrooms: exact match bonus, overshoot penalty
   if (criteria.bedroomsMin != null && listing.bedrooms != null) {
@@ -81,7 +58,6 @@ function ruleBasedScore(listing: NormalizedListing, criteria?: SearchCriteria): 
     if (listing.parkingSpots >= criteria.parkingMin) score += 5;
   }
 
-  void reasons; // suppress lint
   return Math.min(100, Math.max(0, score));
 }
 

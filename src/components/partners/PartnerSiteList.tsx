@@ -383,9 +383,15 @@ export function PartnerSiteList({ selectable, selectedIds = [], onSelectionChang
 
   function handleSiteAdded(site: PartnerSite) {
     setSites((prev) => prev.some((s) => s.id === site.id) ? prev : [...prev, site]);
-    // When a new site is added, auto-trigger sync once its discovery completes
-    pendingAutoSyncRef.current.add(site.id);
-    // Ensure the poll loop starts
+    // Only auto-trigger discovery+sync for brand-new sites that have no profile yet.
+    // Existing sites already have their inventory — no need to re-discover or re-sync.
+    const needsDiscovery = site.propertyUrlPatterns.length === 0
+      && site.listingUrlPatterns.length === 0
+      && (!site.discoveryStrategy || site.discoveryStrategy === 'map_then_scrape')
+      && site.listingCount === 0;
+    if (needsDiscovery) {
+      pendingAutoSyncRef.current.add(site.id);
+    }
     void fetchSites();
   }
 
@@ -493,7 +499,13 @@ export function PartnerSiteList({ selectable, selectedIds = [], onSelectionChang
           const isMappingInBackground = site.discoveryLockedAt !== null;
           const isSyncing = site.syncStatus === 'running' || isSyncingThis;
           const syncedCount = site._count?.propertySources ?? 0;
-          const isFullySynced = site.listingCount > 0 && site.lastScrapedAt !== null && syncedCount >= site.listingCount;
+          // syncStatus === 'done' é a fonte de verdade; a contagem de PropertySource pode
+          // ficar 1-5 registros abaixo de listingCount após deduplicação pós-sync.
+          const isFullySynced =
+            site.listingCount > 0 &&
+            site.lastScrapedAt !== null &&
+            site.syncStatus === 'done' &&
+            syncedCount >= site.listingCount * 0.98;
 
           return (
             <div

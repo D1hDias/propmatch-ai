@@ -3,7 +3,7 @@ import type { NextRequest } from 'next/server';
 import { requireAuth } from '@/server/auth/context';
 import { AppError } from '@/server/lib/errors';
 import { apiError, apiSuccess } from '@/server/lib/response';
-import { prisma } from '@/server/db/client';
+import { withRlsContext } from '@/server/db/client';
 import { z } from 'zod';
 
 function requireAdmin(role: string) {
@@ -34,11 +34,13 @@ export async function PATCH(
       throw new AppError('VALIDATION_FAILED', 'Cannot demote self', 'Não é possível remover seu próprio acesso admin.', 422);
     }
 
-    const user = await prisma.user.update({
-      where: { id },
-      data: body,
-      select: { id: true, email: true, role: true, plan: true },
-    });
+    const user = await withRlsContext(ctx.sub, ctx.role, (tx) =>
+      tx.user.update({
+        where: { id },
+        data: body,
+        select: { id: true, email: true, role: true, plan: true },
+      }),
+    );
 
     return apiSuccess(user);
   } catch (err) {

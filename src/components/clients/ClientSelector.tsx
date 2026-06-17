@@ -33,9 +33,18 @@ export function ClientSelector({ value, onChange, disabled }: ClientSelectorProp
   useEffect(() => {
     apiFetch('/api/v1/clients')
       .then((r) => r.json())
-      .then((data: { clients?: Client[] }) => setClients(data.clients ?? []))
+      .then((data: { clients?: Client[] }) => {
+        const list = data.clients ?? [];
+        setClients(list);
+        // If no client is pre-selected (e.g. coming from URL params), auto-select
+        // the first one so the visible dropdown choice matches React state.
+        if (!value && list.length > 0) {
+          onChange(list[0]!.id);
+        }
+      })
       .catch(() => setClients([]))
       .finally(() => setLoading(false));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const selected = clients.find((c) => c.id === value) ?? null;
@@ -44,7 +53,6 @@ export function ClientSelector({ value, onChange, disabled }: ClientSelectorProp
     <div className="space-y-2">
       <label className="block text-sm font-semibold text-foreground">
         Cliente
-        <span className="ml-1 text-xs font-normal text-muted-foreground">(opcional — cria guest automaticamente)</span>
       </label>
 
       <div className="flex items-center gap-2">
@@ -56,7 +64,6 @@ export function ClientSelector({ value, onChange, disabled }: ClientSelectorProp
             disabled={disabled || loading}
             className="w-full h-10 pl-9 pr-3 rounded-md border border-input bg-background text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-60"
           >
-            <option value="">Sem cliente (guest automático)</option>
             {clients.map((c) => (
               <option key={c.id} value={c.id}>
                 {c.name}{c.phone ? ` · ${formatPhone(c.phone)}` : ''}

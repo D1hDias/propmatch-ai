@@ -4,15 +4,14 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
   LayoutDashboard,
-  FileText,
   Users,
-  Search,
   History,
   MessageCircle,
   User,
   Zap,
   Settings,
   Building2,
+  Plus,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -32,14 +31,12 @@ const navSections: NavSection[] = [
     title: 'Seu Espaço',
     items: [
       { label: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
-      { label: 'Briefings', href: '/briefings', icon: FileText },
       { label: 'Clientes', href: '/clients', icon: Users },
     ],
   },
   {
     title: 'Ferramentas',
     items: [
-      { label: 'Nova Busca', href: '/busca', icon: Search },
       { label: 'Histórico', href: '/historico', icon: History },
       { label: 'Mensagens WhatsApp', href: '/mensagens', icon: MessageCircle },
       { label: 'Imobiliárias', href: '/imobi', icon: Building2 },
@@ -70,6 +67,18 @@ export function SidebarNav({ onLinkClick }: SidebarNavProps) {
           <Building2 className="w-5 h-5 text-white" />
         </div>
         <span className="text-white font-bold text-lg leading-tight">PropMatch AI</span>
+      </div>
+
+      {/* Nova Busca CTA */}
+      <div className="px-4 pb-4">
+        <Link
+          href="/busca"
+          onClick={onLinkClick}
+          className="flex items-center justify-center gap-2 w-full px-4 py-2.5 rounded-lg bg-white text-primary font-semibold text-sm hover:bg-white/90 transition-colors"
+        >
+          <Plus className="w-4 h-4" />
+          Nova Busca
+        </Link>
       </div>
 
       <div className="flex-1 overflow-y-auto px-4 pb-6 space-y-6">

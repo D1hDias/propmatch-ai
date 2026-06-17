@@ -28,8 +28,8 @@ export default function AdminUsersPage() {
   const fetchUsers = useCallback(async () => {
     const res = await apiFetch('/api/v1/admin/users');
     if (!res.ok) { setLoading(false); return; }
-    const data = (await res.json()) as { data: AdminUser[] };
-    setUsers(data.data ?? []);
+    const data = (await res.json()) as AdminUser[];
+    setUsers(data ?? []);
     setLoading(false);
   }, []);
 

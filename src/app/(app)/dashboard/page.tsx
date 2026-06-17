@@ -139,11 +139,11 @@ export default function DashboardPage() {
         <div className="lg:col-span-2 rounded-xl border border-border bg-card overflow-hidden">
           <div className="px-5 py-4 border-b border-border flex items-center justify-between">
             <h3 className="text-sm font-semibold text-foreground">Briefings recentes</h3>
-            <Link href="/briefings" className="text-xs text-primary hover:underline">Ver todos</Link>
+            <Link href="/historico" className="text-xs text-primary hover:underline">Ver todos</Link>
           </div>
           {recentActivity.length === 0 ? (
             <div className="p-8 text-center text-sm text-muted-foreground">
-              Nenhum briefing ainda. <Link href="/briefings/new" className="text-primary hover:underline">Criar primeiro</Link>
+              Nenhum briefing ainda. <Link href="/busca" className="text-primary hover:underline">Criar primeiro</Link>
             </div>
           ) : (
             <div className="divide-y divide-border">

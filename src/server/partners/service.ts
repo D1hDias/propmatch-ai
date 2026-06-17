@@ -32,12 +32,22 @@ export interface UpdatePartnerSiteInput {
 function extractDomain(rawUrl: string): { domain: string; baseUrl: string } {
   try {
     const parsed = new URL(rawUrl.startsWith('http') ? rawUrl : `https://${rawUrl}`);
-    const domain = parsed.hostname;
+    // Normalise: strip leading "www." so www.site.com.br and site.com.br resolve to the same record.
+    const domain = parsed.hostname.replace(/^www\./, '');
     const baseUrl = `${parsed.protocol}//${parsed.hostname}`;
     return { domain, baseUrl };
   } catch {
     throw new AppError('VALIDATION_FAILED', `Invalid URL: ${rawUrl}`, 'URL inválida.', 400);
   }
+}
+
+/**
+ * Returns the registrable part of a hostname for fuzzy matching across TLDs.
+ * "www.kariocaimoveis.com.br" → "kariocaimoveis"
+ * "kariocaimoveis.com" → "kariocaimoveis"
+ */
+function extractBaseName(hostname: string): string {
+  return hostname.replace(/^www\./, '').split('.')[0]?.toLowerCase() ?? '';
 }
 
 // Creates a partner site as a platform-wide asset and subscribes the user to it.
@@ -49,11 +59,20 @@ export async function createPartnerSite(
 ): Promise<{ site: Awaited<ReturnType<typeof prisma.partnerSite.create>>; created: boolean }> {
   const { domain, baseUrl } = extractDomain(input.url);
 
-  const [existing, userRecord] = await Promise.all([
+  const [exact, userRecord] = await Promise.all([
     prisma.partnerSite.findUnique({ where: { domain } }),
     prisma.user.findUnique({ where: { id: userId }, select: { subscribedPartnerSiteIds: true } }),
   ]);
   const currentSubscribed = userRecord?.subscribedPartnerSiteIds ?? [];
+
+  // Fuzzy fallback: if no exact match, look for a site whose domain shares the same
+  // registrable base name (e.g. "kariocaimoveis.com" should find "kariocaimoveis.com.br").
+  const existing = exact ?? await (async () => {
+    const baseName = extractBaseName(domain);
+    if (!baseName) return null;
+    const candidates = await prisma.partnerSite.findMany({ where: { active: true } });
+    return candidates.find((c) => extractBaseName(c.domain) === baseName) ?? null;
+  })();
 
   if (existing) {
     // Subscribe the user to the pre-existing site so it shows in their panel.

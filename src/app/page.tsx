@@ -220,12 +220,14 @@ export default function Home() {
           </div>
           <div className="p-6 grid sm:grid-cols-3 gap-4">
             {[
-              { score: 94, label: 'Apto 2 dorm · Moema', price: 'R$ 820.000', detail: '68 m² · 1 vaga · Mobiliado', color: '#4FD66E' },
-              { score: 78, label: 'Apto 2 dorm · Vila Mariana', price: 'R$ 790.000', detail: '62 m² · 1 vaga', color: '#FF9F00' },
-              { score: 61, label: 'Apto 2 dorm · Ibirapuera', price: 'R$ 850.000', detail: '71 m² · 2 vagas', color: '#FF9F00' },
+              { score: 94, label: 'Apto 2 dorm · Leblon', price: 'R$ 820.000', detail: '68 m² · 1 vaga · Mobiliado', color: '#4FD66E', img: 'https://images.unsplash.com/photo-1502672260266-1c1ef2d93688?w=400&h=224&fit=crop&auto=format' },
+              { score: 78, label: 'Apto 2 dorm · Botafogo', price: 'R$ 790.000', detail: '62 m² · 1 vaga', color: '#FF9F00', img: 'https://images.unsplash.com/photo-1522708323590-d24dbb6b0267?w=400&h=224&fit=crop&auto=format' },
+              { score: 61, label: 'Apto 2 dorm · Barra da Tijuca', price: 'R$ 850.000', detail: '71 m² · 2 vagas', color: '#FF9F00', img: 'https://images.unsplash.com/photo-1560448204-e02f11c3d0e2?w=400&h=224&fit=crop&auto=format' },
             ].map((item) => (
               <div key={item.label} className="rounded-xl border border-[#CCCCCC] overflow-hidden">
-                <div className="h-28 bg-gradient-to-br from-[#e9ecef] to-[#dee2e6] relative">
+                <div className="h-28 relative">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={item.img} alt={item.label} className="w-full h-full object-cover" />
                   <span
                     className="absolute top-2 right-2 flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-bold text-white shadow"
                     style={{ backgroundColor: item.color }}

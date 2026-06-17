@@ -45,3 +45,4 @@ pnpm-debug.log*
 tsconfig.tsbuildinfo
 .vercel
 .env*
+.superpowers/ # brainstorm mockups

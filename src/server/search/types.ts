@@ -76,6 +76,8 @@ export interface NormalizedListing {
   lng: number | null;
   /** ISO string timestamp of when this was scraped */
   scrapedAt: string;
+  /** Partner site that produced this listing (set when sourced from a PartnerSite adapter). */
+  partnerSiteId?: string;
 }
 
 // ---------------------------------------------------------------------------
