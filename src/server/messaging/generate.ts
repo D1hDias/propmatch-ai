@@ -70,14 +70,23 @@ ${propertiesBlock}
 
 Instruções:
 - Escreva em português brasileiro, tom caloroso e profissional
-- Use formatação WhatsApp: *negrito* para títulos/endereços dos imóveis
-- Inicie com "Olá, [NOME]!" — não substitua [NOME], deixe exatamente assim
-- Para cada imóvel, destaque 1 ou 2 diferenciais relevantes para os critérios do cliente
-- Se houver "Observação do corretor" para um imóvel, incorpore essa informação naturalmente no texto
-- Inclua o link de cada imóvel após sua descrição usando o emoji 🔗
-- Termine com uma chamada para ação convidando o cliente a dar feedback
-- Assine com "Abraços," e seu nome (${brokerName}) ao final
+- Use formatação WhatsApp: *negrito* para o título de cada imóvel
+- Inicie EXATAMENTE com: "Oi, [NOME], tudo bem? " — não substitua [NOME], deixe exatamente assim; deixe duas linhas em branco após essa linha
+- Na sequência, escreva EXATAMENTE: "Separei alguns imóveis que eventualmente podem fazer sentido pra você. Dá uma olhada abaixo e caso goste de algum, apenas me informe a numeração pra que eu possa verificar a disponibilidade."
+- Depois da introdução, escreva EXATAMENTE "Seleção:" em uma linha própria, seguida de uma linha em branco
+- Para cada imóvel, siga este formato:
+  ✨ *[Tipo] de [área] m² em [Bairro] - [Cidade]*
+  [Um parágrafo curto e atraente destacando 1 ou 2 diferenciais do imóvel para o perfil do cliente]
+  Preço: [valor formatado em BRL]
+  🔗 [link do imóvel, ou "(Sem link fornecido)" caso não haja]
+  [linha em branco]
+- Se houver "Observação do corretor" para um imóvel, incorpore-a naturalmente no parágrafo descritivo
 - Não invente especificações que não foram fornecidas
+- Finalize a mensagem EXATAMENTE com:
+  "Seguimos à disposição.
+
+  Um abraço,
+  ${brokerName}"
 - Retorne APENAS o texto da mensagem, sem explicações adicionais`;
 
   const response = await callLLM({

@@ -68,32 +68,36 @@ export function formatWhatsAppMessage(input: FormatMessageInput): string {
   const shorten = shortener ?? ((url: string) => url);
 
   const lines: string[] = [
-    `Olá, [NOME]! 👋`,
-    `Separei alguns imóveis que combinam com o que você me passou:`,
-    '',
+    `Oi, [NOME], tudo bem? `,
+    ``,
+    ``,
+    `Separei alguns imóveis que eventualmente podem fazer sentido pra você. Dá uma olhada abaixo e caso goste de algum, apenas me informe a numeração pra que eu possa verificar a disponibilidade.`,
+    ``,
+    `Seleção:`,
+    ``,
   ];
 
-  properties.forEach((p, i) => {
+  properties.forEach((p) => {
     const typeLabel = TYPE_LABELS[p.propertyType] ?? 'Imóvel';
     const priceStr = formatPrice(p.price, p.priceType);
-    const specsStr = specs(p);
-    const loc = location(p);
-    const link = shorten(p.url);
+    const areaStr = p.areaSqm != null ? ` de ${Number(p.areaSqm).toFixed(0)} m²` : '';
+    const loc = p.neighborhood ? `${p.neighborhood} - ${p.city}` : p.city;
+    const rawUrl = p.url?.trim() ?? '';
+    const link = rawUrl ? shorten(rawUrl) : '';
 
-    lines.push(`*${i + 1}. ${p.title ?? typeLabel} — ${loc}*`);
-    if (specsStr) lines.push(`   ${specsStr}`);
-    lines.push(`   💰 ${priceStr}`);
-    lines.push(`   🔗 ${link}`);
+    lines.push(`✨ *${typeLabel}${areaStr} em ${loc}*`);
     if (p.personalNote?.trim()) {
-      lines.push(`   📝 ${p.personalNote.trim()}`);
+      lines.push(p.personalNote.trim());
     }
+    lines.push(`Preço: ${priceStr}`);
+    lines.push(`🔗 ${link || '(Sem link fornecido)'}`);
     lines.push('');
   });
 
   lines.push(
-    `Me fale o que achou! Posso buscar mais opções se precisar.`,
+    `Seguimos à disposição.`,
     ``,
-    `Abraços,`,
+    `Um abraço,`,
     brokerName,
   );
 
